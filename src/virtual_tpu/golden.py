@@ -1,0 +1,253 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum, auto
+from typing import Sequence
+
+import numpy as np
+
+from virtual_tpu.isa import (
+    ISAError,
+    MATMUL_FLAG_ACCUMULATE,
+    MATMUL_FLAG_BF16,
+    SUPPORTED_MATMUL_FLAGS,
+    AddressSpace,
+    Instruction,
+    Opcode,
+    ReduceOp,
+    VectorOp,
+    unpack_dma_flags,
+)
+from virtual_tpu.memory import MemoryError, MemorySystem
+from virtual_tpu.numeric import bf16_matmul, wrap_i32
+
+
+class ExecutionError(RuntimeError):
+    """Raised when the golden model detects an illegal program behavior."""
+
+
+class HaltReason(Enum):
+    RUNNING = auto()
+    HALT = auto()
+    ERROR = auto()
+    TIMEOUT = auto()
+
+
+@dataclass(frozen=True)
+class ExecutionResult:
+    halted: bool
+    reason: HaltReason
+    pc: int
+    steps: int
+    error: str | None = None
+
+
+@dataclass
+class PerformanceCounters:
+    instructions_retired: int = 0
+    dma_bytes: int = 0
+    mxu_active_cycles: int = 0
+    vector_active_cycles: int = 0
+    reduce_active_cycles: int = 0
+    hbm_stall_cycles: int = 0
+    vmem_bank_conflicts: int = 0
+
+
+@dataclass
+class GoldenExecutor:
+    program: Sequence[Instruction]
+    memory: MemorySystem
+    pc: int = 0
+    halted: bool = False
+    error: str | None = None
+    counters: PerformanceCounters | None = None
+
+    def __post_init__(self) -> None:
+        if self.counters is None:
+            self.counters = PerformanceCounters()
+
+    def run(self, max_steps: int = 10_000) -> ExecutionResult:
+        steps = 0
+        while not self.halted and steps < max_steps:
+            self.step()
+            steps += 1
+        if self.halted and self.error is None:
+            return ExecutionResult(True, HaltReason.HALT, self.pc, steps)
+        if self.halted:
+            return ExecutionResult(True, HaltReason.ERROR, self.pc, steps, self.error)
+        return ExecutionResult(False, HaltReason.TIMEOUT, self.pc, steps, "program timed out")
+
+    def step(self) -> None:
+        if self.halted:
+            return
+        if self.pc < 0 or self.pc >= len(self.program):
+            self._fail(f"pc {self.pc} outside program")
+            return
+
+        instr = self.program[self.pc]
+        try:
+            opcode = instr.opcode_enum
+            if opcode == Opcode.NOP:
+                self.counters.instructions_retired += 1
+                self.pc += 1
+            elif opcode in {Opcode.DMA_COPY, Opcode.LOAD_TILE, Opcode.STORE_TILE}:
+                self._execute_dma(instr)
+                self.counters.instructions_retired += 1
+                self.pc += 1
+            elif opcode == Opcode.CLEAR:
+                self._execute_clear(instr)
+                self.counters.instructions_retired += 1
+                self.pc += 1
+            elif opcode == Opcode.MATMUL:
+                self._execute_matmul(instr)
+                self.counters.instructions_retired += 1
+                self.pc += 1
+            elif opcode == Opcode.VECTOR_OP:
+                self._execute_vector_op(instr)
+                self.counters.instructions_retired += 1
+                self.pc += 1
+            elif opcode == Opcode.REDUCE:
+                self._execute_reduce(instr)
+                self.counters.instructions_retired += 1
+                self.pc += 1
+            elif opcode in {Opcode.BARRIER, Opcode.SYNC}:
+                self.counters.instructions_retired += 1
+                self.pc += 1
+            elif opcode == Opcode.HALT:
+                self.halted = True
+                self.counters.instructions_retired += 1
+                self.pc += 1
+            else:
+                self._fail(f"opcode {opcode.name} is not implemented in the MVP golden model")
+        except (ISAError, MemoryError, ExecutionError, ValueError) as exc:
+            self._fail(str(exc))
+
+    def _execute_dma(self, instr: Instruction) -> None:
+        src_space, dst_space = unpack_dma_flags(instr.flags)
+        length = instr.imm0
+        self._require_aligned(instr.src0, instr.dst, length)
+        if length == 0:
+            return
+        payload = self.memory.read(src_space, instr.src0, length)
+        self.memory.write(dst_space, instr.dst, payload)
+        self.counters.dma_bytes += length
+        if src_space == AddressSpace.HBM or dst_space == AddressSpace.HBM:
+            self.counters.hbm_stall_cycles += 80 + ((length + 31) // 32)
+
+    def _execute_clear(self, instr: Instruction) -> None:
+        try:
+            dst_space = AddressSpace(instr.flags & 0x7)
+        except ValueError as exc:
+            raise ExecutionError(f"invalid CLEAR address space {instr.flags & 0x7}") from exc
+        self._require_aligned(instr.dst, 0, instr.imm0)
+        self.memory.clear(dst_space, instr.dst, instr.imm0)
+
+    def _execute_matmul(self, instr: Instruction) -> None:
+        unsupported = instr.flags & ~SUPPORTED_MATMUL_FLAGS
+        if unsupported:
+            raise ExecutionError(f"unsupported MATMUL flags 0x{unsupported:02x}")
+        if instr.imm0 == 0 or instr.imm1 == 0 or instr.imm2 == 0:
+            raise ExecutionError("MATMUL dimensions must be nonzero")
+        vmem_space = self._target_vmem_space(instr.target)
+
+        m, n, k = instr.imm0, instr.imm1, instr.imm2
+        self.counters.mxu_active_cycles += k
+        if instr.flags & MATMUL_FLAG_BF16:
+            a_bf16 = self.memory.read_u16_matrix(vmem_space, instr.src0, m, k)
+            b_bf16 = self.memory.read_u16_matrix(vmem_space, instr.src1, k, n)
+            c_result = bf16_matmul(a_bf16, b_bf16)
+            if instr.flags & MATMUL_FLAG_ACCUMULATE:
+                c_result = c_result + self.memory.read_f32_matrix(vmem_space, instr.dst, m, n)
+            self.memory.write_f32_matrix(vmem_space, instr.dst, c_result.astype(np.float32))
+            return
+
+        a = self.memory.read_i8_matrix(vmem_space, instr.src0, m, k).astype(np.int64)
+        b = self.memory.read_i8_matrix(vmem_space, instr.src1, k, n).astype(np.int64)
+        if instr.flags & MATMUL_FLAG_ACCUMULATE:
+            c_base = self.memory.read_i32_matrix(vmem_space, instr.dst, m, n).astype(np.int64)
+        else:
+            c_base = np.zeros((m, n), dtype=np.int64)
+
+        result = wrap_i32(c_base + (a @ b))
+        self.memory.write_i32_matrix(vmem_space, instr.dst, result)
+
+    def _execute_vector_op(self, instr: Instruction) -> None:
+        if instr.imm0 == 0:
+            return
+        self.counters.vector_active_cycles += max(1, (instr.imm0 + 15) // 16)
+        vmem_space = self._target_vmem_space(instr.target)
+        op = VectorOp(instr.imm1)
+        length = instr.imm0
+        src0 = self.memory.read_i32_vector(vmem_space, instr.src0, length).astype(np.int64)
+
+        if op == VectorOp.VADD:
+            src1 = self.memory.read_i32_vector(vmem_space, instr.src1, length).astype(np.int64)
+            result = src0 + src1
+        elif op == VectorOp.VMUL:
+            src1 = self.memory.read_i32_vector(vmem_space, instr.src1, length).astype(np.int64)
+            result = src0 * src1
+        elif op == VectorOp.VSCALE:
+            result = src0 * np.int64(_sign_extend_16(instr.imm2))
+        elif op == VectorOp.VRELU:
+            result = np.maximum(src0, 0)
+        elif op == VectorOp.VCLAMP:
+            limit = abs(_sign_extend_16(instr.imm2))
+            result = np.clip(src0, -limit, limit)
+        elif op == VectorOp.VMAX:
+            src1 = self.memory.read_i32_vector(vmem_space, instr.src1, length).astype(np.int64)
+            result = np.maximum(src0, src1)
+        else:
+            raise ExecutionError(f"unsupported VECTOR_OP {op}")
+        self.memory.write_i32_vector(vmem_space, instr.dst, wrap_i32(result))
+
+    def _execute_reduce(self, instr: Instruction) -> None:
+        if instr.imm0 == 0:
+            return
+        self.counters.reduce_active_cycles += max(1, (instr.imm0 + 15) // 16)
+        vmem_space = self._target_vmem_space(instr.target)
+        op = ReduceOp(instr.imm1)
+        length = instr.imm0
+
+        if op in {ReduceOp.SUM_ALL, ReduceOp.MAX_ALL}:
+            values = self.memory.read_i32_vector(vmem_space, instr.src0, length).astype(np.int64)
+            result = np.array([values.sum() if op == ReduceOp.SUM_ALL else values.max()], dtype=np.int64)
+        else:
+            columns = instr.imm2
+            if columns == 0 or length % columns != 0:
+                raise ExecutionError("row/column REDUCE requires imm0 rows*columns and nonzero imm2 columns")
+            matrix = self.memory.read_i32_vector(vmem_space, instr.src0, length).astype(np.int64).reshape(length // columns, columns)
+            if op == ReduceOp.SUM_ROWS:
+                result = matrix.sum(axis=1)
+            elif op == ReduceOp.MAX_ROWS:
+                result = matrix.max(axis=1)
+            elif op == ReduceOp.SUM_COLS:
+                result = matrix.sum(axis=0)
+            elif op == ReduceOp.MAX_COLS:
+                result = matrix.max(axis=0)
+            else:
+                raise ExecutionError(f"unsupported REDUCE {op}")
+        self.memory.write_i32_vector(vmem_space, instr.dst, wrap_i32(result))
+
+    def _target_vmem_space(self, target: int) -> AddressSpace:
+        tc_mask = (target >> 4) & 0xF
+        unit_mask = target & 0xF
+        if unit_mask > 0xF:
+            raise ExecutionError(f"invalid unit target 0x{target:02x}")
+        if tc_mask == 0x1:
+            return AddressSpace.VMEM0
+        if tc_mask == 0x2:
+            return AddressSpace.VMEM1
+        raise ExecutionError(f"golden model supports one TensorCore target at a time, got 0x{target:02x}")
+
+    def _require_aligned(self, *values: int) -> None:
+        for value in values:
+            if value % 4 != 0:
+                raise ExecutionError(f"DMA/CLEAR value {value} is not 4-byte aligned")
+
+    def _fail(self, message: str) -> None:
+        self.error = message
+        self.halted = True
+
+
+def _sign_extend_16(value: int) -> int:
+    return value - 0x10000 if value & 0x8000 else value

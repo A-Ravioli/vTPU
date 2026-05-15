@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "virtual-tpu"
+version = "0.1.0"
+description = "Educational TPU v4-inspired accelerator model and RTL scaffold"
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.24"]
+
+[tool.setuptools]
+packages = ["virtual_tpu", "virtual_tpu.archsim", "virtual_tpu.archsim.network", "compiler"]
+
+[tool.setuptools.package-dir]
+virtual_tpu = "src/virtual_tpu"
+compiler = "compiler"
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
+addopts = "-ra"
