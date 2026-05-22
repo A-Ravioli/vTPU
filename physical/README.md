@@ -72,6 +72,14 @@ The Docker target uses `openroad/orfs:latest` with `linux/amd64` emulation, moun
 this repo at `/work/vTPU`, and writes ORFS results into the mounted
 OpenROAD-flow-scripts `flow` directory.
 
+If Yosys synthesis has already produced `1_2_yosys.v` and only the OpenROAD
+database stage failed, resume without repeating the expensive Yosys/ABC step:
+
+```sh
+make physical-openroad-synth-odb-docker
+make physical-openroad-floorplan-docker
+```
+
 The design config lives at:
 
 ```text

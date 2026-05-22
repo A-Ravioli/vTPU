@@ -22,7 +22,7 @@ RTL_SOURCES := \
 	rtl/memory/vmem_top.sv \
 	rtl/top/virtual_tpu_v4_top.sv
 
-.PHONY: all test-python test-rtl-unit test-rtl-integration lint physical-lint physical-synth-check physical-synth-check-docker physical-openroad physical-openroad-docker physical-openroad-synth-odb-docker waves clean
+.PHONY: all test-python test-rtl-unit test-rtl-integration lint physical-lint physical-synth-check physical-synth-check-docker physical-openroad physical-openroad-docker physical-openroad-synth-odb-docker physical-openroad-floorplan-docker waves clean
 
 all: test-python test-rtl-unit test-rtl-integration
 
@@ -88,6 +88,15 @@ physical-openroad-synth-odb-docker:
 		-w /OpenROAD-flow-scripts/flow \
 		$(OPENROAD_DOCKER_IMAGE) \
 		bash -lc 'source /OpenROAD-flow-scripts/env.sh && mkdir -p results/sky130hd/vtpu_pd_tiny/base && cp /work/vTPU/physical/openroad/designs/sky130hd/vtpu_pd_tiny/constraint.sdc results/sky130hd/vtpu_pd_tiny/base/1_2_yosys.sdc && touch results/sky130hd/vtpu_pd_tiny/base/1_2_yosys.v results/sky130hd/vtpu_pd_tiny/base/1_2_yosys.sdc && make DESIGN_CONFIG=/work/vTPU/physical/openroad/designs/sky130hd/vtpu_pd_tiny/config.mk results/sky130hd/vtpu_pd_tiny/base/1_synth.odb'
+
+physical-openroad-floorplan-docker:
+	docker run --rm --platform $(OPENROAD_DOCKER_PLATFORM) \
+		-u $$(id -u):$$(id -g) \
+		-v $(CURDIR):/work/vTPU \
+		-v $(OPENROAD_FLOW_ROOT):/OpenROAD-flow-scripts/flow \
+		-w /OpenROAD-flow-scripts/flow \
+		$(OPENROAD_DOCKER_IMAGE) \
+		bash -lc 'source /OpenROAD-flow-scripts/env.sh && cp /work/vTPU/physical/openroad/designs/sky130hd/vtpu_pd_tiny/constraint.sdc results/sky130hd/vtpu_pd_tiny/base/1_synth.sdc && make DESIGN_CONFIG=/work/vTPU/physical/openroad/designs/sky130hd/vtpu_pd_tiny/config.mk do-2_1_floorplan'
 
 test-rtl-unit: lint
 	PYTHONPATH=$(PYTHONPATH):tests/cocotb $(PYTHON) -m pytest -q tests/rtl/test_pe_runner.py
