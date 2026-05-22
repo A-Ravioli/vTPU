@@ -1,11 +1,20 @@
 .DS_Store
+
+# Python
 __pycache__/
 *.py[cod]
 .pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# RTL/simulation outputs
 sim_build/
 obj_dir/
 *.vcd
 *.fst
 *.xml
-dist/
-*.egg-info/
+
+# Tool output
+*.log
+*.tmp
