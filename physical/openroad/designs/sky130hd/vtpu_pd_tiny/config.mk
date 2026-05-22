@@ -21,6 +21,7 @@ export VERILOG_FILES = \
   $(VTPU_REPO_ROOT)/rtl/memory/dma_engine.sv \
   $(VTPU_REPO_ROOT)/rtl/memory/vmem_top.sv \
   $(VTPU_REPO_ROOT)/rtl/top/virtual_tpu_v4_top.sv \
+  $(VTPU_REPO_ROOT)/rtl/physical/physical_memories.sv \
   $(VTPU_REPO_ROOT)/rtl/physical/vtpu_pd_tiny_top.sv
 
 export SDC_FILE = $(VTPU_REPO_ROOT)/physical/openroad/designs/sky130hd/vtpu_pd_tiny/constraint.sdc

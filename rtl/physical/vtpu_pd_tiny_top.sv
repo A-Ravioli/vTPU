@@ -43,7 +43,8 @@ module vtpu_pd_tiny_top (
     .VMEM_BYTES(256),
     .CMEM_BYTES(256),
     .HBM_BYTES(256),
-    .INSTR_DEPTH(16)
+    .INSTR_DEPTH(16),
+    .PHYSICAL_MEMORIES(1'b1)
   ) u_vtpu (
     .clk(clk),
     .rst_n(rst_n),

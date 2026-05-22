@@ -18,7 +18,8 @@ module virtual_tpu_v4_top #(
   parameter int VMEM_BYTES = 262144,
   parameter int CMEM_BYTES = 524288,
   parameter int HBM_BYTES = 1048576,
-  parameter int INSTR_DEPTH = 1024
+  parameter int INSTR_DEPTH = 1024,
+  parameter bit PHYSICAL_MEMORIES = 1'b0
 )(
   input logic clk,
   input logic rst_n,
@@ -185,21 +186,41 @@ module virtual_tpu_v4_top #(
   assign instr_host_we = host_req_valid && host_req.write && host_aligned && instr_addr_hit && !chip_units_busy;
   assign hbm_host_we = host_req_valid && host_req.write && host_aligned && hbm_addr_hit && hbm_word_in_range && !chip_units_busy;
 
-  instr_mem #(
-    .DEPTH(INSTR_DEPTH)
-  ) u_instr_mem (
-    .clk(clk),
-    .rst_n(rst_n),
-    .host_we(instr_host_we),
-    .host_addr(instr_host_addr),
-    .host_lane(instr_host_lane),
-    .host_wdata(host_req.wdata),
-    .host_rdata(instr_host_rdata),
-    .fetch_en(instr_fetch_en),
-    .fetch_pc(pc[INSTR_ADDR_W-1:0]),
-    .instr(instr_raw),
-    .fetch_error(instr_fetch_error)
-  );
+  generate
+    if (PHYSICAL_MEMORIES) begin : gen_physical_instr_mem
+      instr_mem_physical #(
+        .DEPTH(INSTR_DEPTH)
+      ) u_instr_mem (
+        .clk(clk),
+        .rst_n(rst_n),
+        .host_we(instr_host_we),
+        .host_addr(instr_host_addr),
+        .host_lane(instr_host_lane),
+        .host_wdata(host_req.wdata),
+        .host_rdata(instr_host_rdata),
+        .fetch_en(instr_fetch_en),
+        .fetch_pc(pc[INSTR_ADDR_W-1:0]),
+        .instr(instr_raw),
+        .fetch_error(instr_fetch_error)
+      );
+    end else begin : gen_behavioral_instr_mem
+      instr_mem #(
+        .DEPTH(INSTR_DEPTH)
+      ) u_instr_mem (
+        .clk(clk),
+        .rst_n(rst_n),
+        .host_we(instr_host_we),
+        .host_addr(instr_host_addr),
+        .host_lane(instr_host_lane),
+        .host_wdata(host_req.wdata),
+        .host_rdata(instr_host_rdata),
+        .fetch_en(instr_fetch_en),
+        .fetch_pc(pc[INSTR_ADDR_W-1:0]),
+        .instr(instr_raw),
+        .fetch_error(instr_fetch_error)
+      );
+    end
+  endgenerate
 
   instr_decoder u_instr_decoder (
     .instr_raw(instr_raw),
@@ -258,44 +279,88 @@ module virtual_tpu_v4_top #(
     .bytes_moved_pulse(dma_bytes_moved_pulse)
   );
 
-  hbm_model #(
-    .HBM_BYTES(HBM_BYTES),
-    .DATA_W(32),
-    .READ_LATENCY(1),
-    .WRITE_LATENCY(1)
-  ) u_hbm (
-    .clk(clk),
-    .rst_n(rst_n),
-    .req(hbm_req),
-    .resp(hbm_resp),
-    .host_we(hbm_host_we),
-    .host_addr(hbm_host_addr),
-    .host_wdata(host_req.wdata),
-    .host_wstrb(4'hF),
-    .host_rdata(hbm_host_rdata),
-    .access_pulse(hbm_access_pulse),
-    .stall_pulse(hbm_stall_pulse)
-  );
+  generate
+    if (PHYSICAL_MEMORIES) begin : gen_physical_hbm
+      hbm_model_physical #(
+        .HBM_BYTES(HBM_BYTES),
+        .DATA_W(32),
+        .READ_LATENCY(1),
+        .WRITE_LATENCY(1)
+      ) u_hbm (
+        .clk(clk),
+        .rst_n(rst_n),
+        .req(hbm_req),
+        .resp(hbm_resp),
+        .host_we(hbm_host_we),
+        .host_addr(hbm_host_addr),
+        .host_wdata(host_req.wdata),
+        .host_wstrb(4'hF),
+        .host_rdata(hbm_host_rdata),
+        .access_pulse(hbm_access_pulse),
+        .stall_pulse(hbm_stall_pulse)
+      );
+    end else begin : gen_behavioral_hbm
+      hbm_model #(
+        .HBM_BYTES(HBM_BYTES),
+        .DATA_W(32),
+        .READ_LATENCY(1),
+        .WRITE_LATENCY(1)
+      ) u_hbm (
+        .clk(clk),
+        .rst_n(rst_n),
+        .req(hbm_req),
+        .resp(hbm_resp),
+        .host_we(hbm_host_we),
+        .host_addr(hbm_host_addr),
+        .host_wdata(host_req.wdata),
+        .host_wstrb(4'hF),
+        .host_rdata(hbm_host_rdata),
+        .access_pulse(hbm_access_pulse),
+        .stall_pulse(hbm_stall_pulse)
+      );
+    end
+  endgenerate
 
   assign cmem_tc0_req = '0;
   assign cmem_tc1_req = '0;
 
-  cmem_top #(
-    .CMEM_BYTES(CMEM_BYTES),
-    .DATA_W(32),
-    .BANKS(vtpu_pkg::VTPU_VMEM_BANKS)
-  ) u_cmem (
-    .clk(clk),
-    .rst_n(rst_n),
-    .req_dma(cmem_dma_req),
-    .resp_dma(cmem_dma_resp),
-    .req_tc0(cmem_tc0_req),
-    .resp_tc0(cmem_tc0_resp),
-    .req_tc1(cmem_tc1_req),
-    .resp_tc1(cmem_tc1_resp),
-    .access_count_pulse(cmem_access_pulse),
-    .bank_conflict_count_pulse(cmem_conflict_pulse)
-  );
+  generate
+    if (PHYSICAL_MEMORIES) begin : gen_physical_cmem
+      cmem_top_physical #(
+        .CMEM_BYTES(CMEM_BYTES),
+        .DATA_W(32),
+        .BANKS(vtpu_pkg::VTPU_VMEM_BANKS)
+      ) u_cmem (
+        .clk(clk),
+        .rst_n(rst_n),
+        .req_dma(cmem_dma_req),
+        .resp_dma(cmem_dma_resp),
+        .req_tc0(cmem_tc0_req),
+        .resp_tc0(cmem_tc0_resp),
+        .req_tc1(cmem_tc1_req),
+        .resp_tc1(cmem_tc1_resp),
+        .access_count_pulse(cmem_access_pulse),
+        .bank_conflict_count_pulse(cmem_conflict_pulse)
+      );
+    end else begin : gen_behavioral_cmem
+      cmem_top #(
+        .CMEM_BYTES(CMEM_BYTES),
+        .DATA_W(32),
+        .BANKS(vtpu_pkg::VTPU_VMEM_BANKS)
+      ) u_cmem (
+        .clk(clk),
+        .rst_n(rst_n),
+        .req_dma(cmem_dma_req),
+        .resp_dma(cmem_dma_resp),
+        .req_tc0(cmem_tc0_req),
+        .resp_tc0(cmem_tc0_resp),
+        .req_tc1(cmem_tc1_req),
+        .resp_tc1(cmem_tc1_resp),
+        .access_count_pulse(cmem_access_pulse),
+        .bank_conflict_count_pulse(cmem_conflict_pulse)
+      );
+    end
+  endgenerate
 
   tensor_core #(
     .TC_ID(0),
@@ -305,7 +370,8 @@ module virtual_tpu_v4_top #(
     .ARRAY_K(ARRAY_K),
     .DATA_W(DATA_W),
     .ACC_W(ACC_W),
-    .VMEM_BYTES(VMEM_BYTES)
+    .VMEM_BYTES(VMEM_BYTES),
+    .PHYSICAL_MEMORIES(PHYSICAL_MEMORIES)
   ) u_tensor_core0 (
     .clk(clk),
     .rst_n(rst_n),
@@ -333,7 +399,8 @@ module virtual_tpu_v4_top #(
     .ARRAY_K(ARRAY_K),
     .DATA_W(DATA_W),
     .ACC_W(ACC_W),
-    .VMEM_BYTES(VMEM_BYTES)
+    .VMEM_BYTES(VMEM_BYTES),
+    .PHYSICAL_MEMORIES(PHYSICAL_MEMORIES)
   ) u_tensor_core1 (
     .clk(clk),
     .rst_n(rst_n),

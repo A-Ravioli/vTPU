@@ -15,4 +15,5 @@ rtl/memory/cmem_top.sv
 rtl/memory/dma_engine.sv
 rtl/memory/vmem_top.sv
 rtl/top/virtual_tpu_v4_top.sv
+rtl/physical/physical_memories.sv
 rtl/physical/vtpu_pd_tiny_top.sv

@@ -16,7 +16,8 @@ module tensor_core #(
   parameter int ARRAY_K = 16,
   parameter int DATA_W = 8,
   parameter int ACC_W = 32,
-  parameter int VMEM_BYTES = 262144
+  parameter int VMEM_BYTES = 262144,
+  parameter bit PHYSICAL_MEMORIES = 1'b0
 )(
   input  logic clk,
   input  logic rst_n,
@@ -270,25 +271,49 @@ module tensor_core #(
     .status(reduce_status)
   );
 
-  vmem_top #(
-    .VMEM_BYTES(VMEM_BYTES),
-    .DATA_W(32),
-    .BANKS(vtpu_pkg::VTPU_VMEM_BANKS),
-    .MXU_PORTS(MXUS_PER_TC)
-  ) u_vmem (
-    .clk(clk),
-    .rst_n(rst_n),
-    .req_dma(dma_req),
-    .resp_dma(dma_resp),
-    .req_mxu(mxu_req),
-    .resp_mxu(mxu_resp),
-    .req_vector(vector_req),
-    .resp_vector(vector_resp),
-    .req_reduce(reduce_port_req),
-    .resp_reduce(reduce_port_resp),
-    .access_count_pulse(vmem_access_count_pulse),
-    .bank_conflict_count_pulse(vmem_bank_conflict_count_pulse)
-  );
+  generate
+    if (PHYSICAL_MEMORIES) begin : gen_physical_vmem
+      vmem_top_physical #(
+        .VMEM_BYTES(VMEM_BYTES),
+        .DATA_W(32),
+        .BANKS(vtpu_pkg::VTPU_VMEM_BANKS),
+        .MXU_PORTS(MXUS_PER_TC)
+      ) u_vmem (
+        .clk(clk),
+        .rst_n(rst_n),
+        .req_dma(dma_req),
+        .resp_dma(dma_resp),
+        .req_mxu(mxu_req),
+        .resp_mxu(mxu_resp),
+        .req_vector(vector_req),
+        .resp_vector(vector_resp),
+        .req_reduce(reduce_port_req),
+        .resp_reduce(reduce_port_resp),
+        .access_count_pulse(vmem_access_count_pulse),
+        .bank_conflict_count_pulse(vmem_bank_conflict_count_pulse)
+      );
+    end else begin : gen_behavioral_vmem
+      vmem_top #(
+        .VMEM_BYTES(VMEM_BYTES),
+        .DATA_W(32),
+        .BANKS(vtpu_pkg::VTPU_VMEM_BANKS),
+        .MXU_PORTS(MXUS_PER_TC)
+      ) u_vmem (
+        .clk(clk),
+        .rst_n(rst_n),
+        .req_dma(dma_req),
+        .resp_dma(dma_resp),
+        .req_mxu(mxu_req),
+        .resp_mxu(mxu_resp),
+        .req_vector(vector_req),
+        .resp_vector(vector_resp),
+        .req_reduce(reduce_port_req),
+        .resp_reduce(reduce_port_resp),
+        .access_count_pulse(vmem_access_count_pulse),
+        .bank_conflict_count_pulse(vmem_bank_conflict_count_pulse)
+      );
+    end
+  endgenerate
 
   function automatic logic clear_range_ok(input vtpu_pkg::tc_cmd_t local_cmd);
     clear_range_ok = (local_cmd.dst[1:0] == 2'b00) &&
