@@ -7,6 +7,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+docs/
 
 # RTL/simulation outputs
 sim_build/
