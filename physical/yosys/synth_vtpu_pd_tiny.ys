@@ -1,0 +1,26 @@
+read_verilog -sv -Irtl/common rtl/common/vtpu_pkg.sv
+read_verilog -sv -Irtl/common rtl/common/perf_counters.sv
+read_verilog -sv -Irtl/common rtl/primitive/pe_int8.sv
+read_verilog -sv -Irtl/common rtl/memory/vmem_bank.sv
+read_verilog -sv -Irtl/common rtl/mxu/systolic_array.sv
+read_verilog -sv -Irtl/common rtl/mxu/mxu_top.sv
+read_verilog -sv -Irtl/common rtl/vector/vector_unit.sv
+read_verilog -sv -Irtl/common rtl/vector/reduce_unit.sv
+read_verilog -sv -Irtl/common rtl/tensor_core/tensor_core.sv
+read_verilog -sv -Irtl/common rtl/isa/instr_decoder.sv
+read_verilog -sv -Irtl/common rtl/isa/instr_mem.sv
+read_verilog -sv -Irtl/common rtl/isa/control_fsm.sv
+read_verilog -sv -Irtl/common rtl/memory/hbm_model.sv
+read_verilog -sv -Irtl/common rtl/memory/cmem_top.sv
+read_verilog -sv -Irtl/common rtl/memory/dma_engine.sv
+read_verilog -sv -Irtl/common rtl/memory/vmem_top.sv
+read_verilog -sv -Irtl/common rtl/top/virtual_tpu_v4_top.sv
+read_verilog -sv -Irtl/common rtl/physical/vtpu_pd_tiny_top.sv
+
+hierarchy -check -top vtpu_pd_tiny_top
+proc
+opt
+memory -nomap
+opt
+stat
+write_verilog physical/reports/vtpu_pd_tiny_synth_check.v

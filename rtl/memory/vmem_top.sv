@@ -178,14 +178,6 @@ module vmem_top #(
     end
   endtask
 
-  task automatic drive_idle_resp(output vtpu_pkg::vmem_resp_t port_resp);
-    begin
-      port_resp.valid = 1'b0;
-      port_resp.rdata = '0;
-      port_resp.error = 1'b0;
-    end
-  endtask
-
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       resp_dma_q <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
@@ -194,31 +186,34 @@ module vmem_top #(
       for (seq_idx = 0; seq_idx < MXU_PORTS; seq_idx++) begin
         resp_mxu_q[seq_idx] <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
       end
-    end else begin
-      drive_idle_resp(resp_dma_q);
-      drive_idle_resp(resp_vector_q);
-      drive_idle_resp(resp_reduce_q);
+    end else begin : service_ports
+      logic [DATA_W-1:0] service_rdata;
+      logic service_error;
+
+      resp_dma_q <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
+      resp_vector_q <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
+      resp_reduce_q <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
       for (seq_idx = 0; seq_idx < MXU_PORTS; seq_idx++) begin
-        drive_idle_resp(resp_mxu_q[seq_idx]);
+        resp_mxu_q[seq_idx] <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
       end
 
       for (seq_idx = 0; seq_idx < MXU_PORTS; seq_idx++) begin
         if (valid_mxu[seq_idx] && ready_mxu[seq_idx]) begin
-          resp_mxu_q[seq_idx].valid <= 1'b1;
-          service_req(req_mxu[seq_idx], resp_mxu_q[seq_idx].rdata, resp_mxu_q[seq_idx].error);
+          service_req(req_mxu[seq_idx], service_rdata, service_error);
+          resp_mxu_q[seq_idx] <= '{ready: 1'b1, valid: 1'b1, rdata: service_rdata, error: service_error};
         end
       end
       if (valid_vector && ready_vector) begin
-        resp_vector_q.valid <= 1'b1;
-        service_req(req_vector, resp_vector_q.rdata, resp_vector_q.error);
+        service_req(req_vector, service_rdata, service_error);
+        resp_vector_q <= '{ready: 1'b1, valid: 1'b1, rdata: service_rdata, error: service_error};
       end
       if (valid_reduce && ready_reduce) begin
-        resp_reduce_q.valid <= 1'b1;
-        service_req(req_reduce, resp_reduce_q.rdata, resp_reduce_q.error);
+        service_req(req_reduce, service_rdata, service_error);
+        resp_reduce_q <= '{ready: 1'b1, valid: 1'b1, rdata: service_rdata, error: service_error};
       end
       if (valid_dma && ready_dma) begin
-        resp_dma_q.valid <= 1'b1;
-        service_req(req_dma, resp_dma_q.rdata, resp_dma_q.error);
+        service_req(req_dma, service_rdata, service_error);
+        resp_dma_q <= '{ready: 1'b1, valid: 1'b1, rdata: service_rdata, error: service_error};
       end
     end
   end

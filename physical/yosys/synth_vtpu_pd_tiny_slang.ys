@@ -1,0 +1,11 @@
+plugin -i slang
+
+read_slang --std 1800-2017 --top vtpu_pd_tiny_top -Irtl/common -f physical/rtl_sources.f
+
+hierarchy -check -top vtpu_pd_tiny_top
+proc
+opt
+memory -nomap
+opt
+stat
+write_verilog physical/reports/vtpu_pd_tiny_synth_check_slang.v

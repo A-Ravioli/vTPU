@@ -19,3 +19,4 @@ obj_dir/
 # Tool output
 *.log
 *.tmp
+physical/reports/

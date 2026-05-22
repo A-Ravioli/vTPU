@@ -116,35 +116,30 @@ module cmem_top #(
     end
   endtask
 
-  task automatic drive_idle_resp(output vtpu_pkg::vmem_resp_t port_resp);
-    begin
-      port_resp.valid = 1'b0;
-      port_resp.rdata = '0;
-      port_resp.error = 1'b0;
-    end
-  endtask
-
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       resp_dma_q <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
       resp_tc0_q <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
       resp_tc1_q <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
-    end else begin
-      drive_idle_resp(resp_dma_q);
-      drive_idle_resp(resp_tc0_q);
-      drive_idle_resp(resp_tc1_q);
+    end else begin : service_ports
+      logic [DATA_W-1:0] service_rdata;
+      logic service_error;
+
+      resp_dma_q <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
+      resp_tc0_q <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
+      resp_tc1_q <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
 
       if (valid_tc0 && ready_tc0) begin
-        resp_tc0_q.valid <= 1'b1;
-        service_req(req_tc0, resp_tc0_q.rdata, resp_tc0_q.error);
+        service_req(req_tc0, service_rdata, service_error);
+        resp_tc0_q <= '{ready: 1'b1, valid: 1'b1, rdata: service_rdata, error: service_error};
       end
       if (valid_tc1 && ready_tc1) begin
-        resp_tc1_q.valid <= 1'b1;
-        service_req(req_tc1, resp_tc1_q.rdata, resp_tc1_q.error);
+        service_req(req_tc1, service_rdata, service_error);
+        resp_tc1_q <= '{ready: 1'b1, valid: 1'b1, rdata: service_rdata, error: service_error};
       end
       if (valid_dma && ready_dma) begin
-        resp_dma_q.valid <= 1'b1;
-        service_req(req_dma, resp_dma_q.rdata, resp_dma_q.error);
+        service_req(req_dma, service_rdata, service_error);
+        resp_dma_q <= '{ready: 1'b1, valid: 1'b1, rdata: service_rdata, error: service_error};
       end
     end
   end
