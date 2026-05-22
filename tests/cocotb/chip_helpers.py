@@ -5,8 +5,37 @@ REG_CONTROL = 0x0000
 REG_STATUS = 0x0004
 REG_ERROR_CODE = 0x0008
 REG_PC = 0x000C
+COUNTER_BASE = 0x0100
 INSTR_BASE = 0x1000
 HBM_BASE = 0x0010_0000
+
+COUNTER_CYCLES = 0
+COUNTER_INSTRUCTIONS = 1
+COUNTER_DMA_BYTES = 2
+COUNTER_DMA_ACTIVE = 3
+COUNTER_HBM_STALL = 4
+COUNTER_CMEM_ACCESSES = 5
+COUNTER_VMEM_ACCESSES = 6
+COUNTER_VMEM_BANK_CONFLICTS = 7
+COUNTER_MXU_ACTIVE = 8
+COUNTER_VECTOR_ACTIVE = 9
+COUNTER_REDUCE_ACTIVE = 10
+COUNTER_BARRIER_WAIT = 11
+COUNTER_ERRORS = 12
+COUNTER_TC0_ACTIVE = 13
+COUNTER_TC1_ACTIVE = 14
+COUNTER_TC0_MXU0_ACTIVE = 15
+COUNTER_TC0_MXU1_ACTIVE = 16
+COUNTER_TC0_MXU2_ACTIVE = 17
+COUNTER_TC0_MXU3_ACTIVE = 18
+COUNTER_TC1_MXU0_ACTIVE = 19
+COUNTER_TC1_MXU1_ACTIVE = 20
+COUNTER_TC1_MXU2_ACTIVE = 21
+COUNTER_TC1_MXU3_ACTIVE = 22
+COUNTER_DMA_IDLE = 23
+COUNTER_MXU_IDLE = 24
+COUNTER_VECTOR_IDLE = 25
+COUNTER_REDUCE_IDLE = 26
 
 
 def pack_host_req(write: int, addr: int, wdata: int = 0) -> int:
@@ -48,6 +77,18 @@ async def mmio_read(dut, addr: int) -> tuple[int, bool]:
     dut.host_req_valid.value = 0
     dut.host_req.value = 0
     return unpack_host_resp(resp)
+
+
+async def read_counter(dut, index: int) -> int:
+    lo, lo_err = await mmio_read(dut, COUNTER_BASE + (index * 8))
+    hi, hi_err = await mmio_read(dut, COUNTER_BASE + (index * 8) + 4)
+    assert not lo_err
+    assert not hi_err
+    return (hi << 32) | lo
+
+
+async def reset_counters(dut) -> None:
+    assert not await mmio_write(dut, REG_CONTROL, 2)
 
 
 async def load_program(dut, program) -> None:

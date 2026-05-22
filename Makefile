@@ -2,6 +2,7 @@ PYTHON ?= python3
 PYTHONPATH := src:.
 RTL_SOURCES := \
 	rtl/common/vtpu_pkg.sv \
+	rtl/common/perf_counters.sv \
 	rtl/primitive/pe_int8.sv \
 	rtl/memory/vmem_bank.sv \
 	rtl/mxu/systolic_array.sv \
@@ -13,6 +14,7 @@ RTL_SOURCES := \
 	rtl/isa/instr_mem.sv \
 	rtl/isa/control_fsm.sv \
 	rtl/memory/hbm_model.sv \
+	rtl/memory/cmem_top.sv \
 	rtl/memory/dma_engine.sv \
 	rtl/memory/vmem_top.sv \
 	rtl/top/virtual_tpu_v4_top.sv
@@ -34,6 +36,8 @@ lint:
 
 test-rtl-unit: lint
 	PYTHONPATH=$(PYTHONPATH):tests/cocotb $(PYTHON) -m pytest -q tests/rtl/test_pe_runner.py
+	PYTHONPATH=$(PYTHONPATH):tests/cocotb $(PYTHON) -m pytest -q tests/rtl/test_memory_runner.py
+	PYTHONPATH=$(PYTHONPATH):tests/cocotb $(PYTHON) -m pytest -q tests/rtl/test_unit_matrix_runner.py
 
 test-rtl-integration: lint
 	PYTHONPATH=$(PYTHONPATH):tests/cocotb $(PYTHON) -m pytest -q tests/rtl/test_chip_runner.py

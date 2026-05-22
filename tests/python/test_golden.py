@@ -70,6 +70,24 @@ def test_matmul_accumulate_wraps_like_int32() -> None:
     np.testing.assert_array_equal(memory.read_i32_matrix(AddressSpace.VMEM0, 8, 1, 1), expected)
 
 
+def test_matmul_broadcast_target_updates_both_tensor_core_vmems() -> None:
+    memory = MemorySystem(hbm_bytes=4096, cmem_bytes=4096, vmem_bytes=4096)
+    a0 = np.array([[1, 2], [3, 4]], dtype=np.int8)
+    b0 = np.array([[5, 6], [7, 8]], dtype=np.int8)
+    a1 = np.array([[2, 0], [1, -1]], dtype=np.int8)
+    b1 = np.array([[3, 4], [5, 6]], dtype=np.int8)
+    memory.write_i8_matrix(AddressSpace.VMEM0, 0, a0)
+    memory.write_i8_matrix(AddressSpace.VMEM0, 16, b0)
+    memory.write_i8_matrix(AddressSpace.VMEM1, 0, a1)
+    memory.write_i8_matrix(AddressSpace.VMEM1, 16, b1)
+
+    program = [matmul(dst_addr=32, src_a_addr=0, src_b_addr=16, m=2, n=2, k=2, target=0x30), halt()]
+    result = GoldenExecutor(program, memory).run()
+    assert result.reason is HaltReason.HALT
+    np.testing.assert_array_equal(memory.read_i32_matrix(AddressSpace.VMEM0, 32, 2, 2), a0.astype(np.int32) @ b0.astype(np.int32))
+    np.testing.assert_array_equal(memory.read_i32_matrix(AddressSpace.VMEM1, 32, 2, 2), a1.astype(np.int32) @ b1.astype(np.int32))
+
+
 def test_illegal_unaligned_dma_errors_without_corruption() -> None:
     memory = MemorySystem(hbm_bytes=64, cmem_bytes=64, vmem_bytes=64)
     memory.write(AddressSpace.HBM, 0, b"abcdef")

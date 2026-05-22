@@ -148,96 +148,100 @@ class GoldenExecutor:
             raise ExecutionError(f"unsupported MATMUL flags 0x{unsupported:02x}")
         if instr.imm0 == 0 or instr.imm1 == 0 or instr.imm2 == 0:
             raise ExecutionError("MATMUL dimensions must be nonzero")
-        vmem_space = self._target_vmem_space(instr.target)
-
         m, n, k = instr.imm0, instr.imm1, instr.imm2
-        self.counters.mxu_active_cycles += k
-        if instr.flags & MATMUL_FLAG_BF16:
-            a_bf16 = self.memory.read_u16_matrix(vmem_space, instr.src0, m, k)
-            b_bf16 = self.memory.read_u16_matrix(vmem_space, instr.src1, k, n)
-            c_result = bf16_matmul(a_bf16, b_bf16)
+        for vmem_space in self._target_vmem_spaces(instr.target):
+            self.counters.mxu_active_cycles += k
+            if instr.flags & MATMUL_FLAG_BF16:
+                a_bf16 = self.memory.read_u16_matrix(vmem_space, instr.src0, m, k)
+                b_bf16 = self.memory.read_u16_matrix(vmem_space, instr.src1, k, n)
+                c_result = bf16_matmul(a_bf16, b_bf16)
+                if instr.flags & MATMUL_FLAG_ACCUMULATE:
+                    c_result = c_result + self.memory.read_f32_matrix(vmem_space, instr.dst, m, n)
+                self.memory.write_f32_matrix(vmem_space, instr.dst, c_result.astype(np.float32))
+                continue
+
+            a = self.memory.read_i8_matrix(vmem_space, instr.src0, m, k).astype(np.int64)
+            b = self.memory.read_i8_matrix(vmem_space, instr.src1, k, n).astype(np.int64)
             if instr.flags & MATMUL_FLAG_ACCUMULATE:
-                c_result = c_result + self.memory.read_f32_matrix(vmem_space, instr.dst, m, n)
-            self.memory.write_f32_matrix(vmem_space, instr.dst, c_result.astype(np.float32))
-            return
+                c_base = self.memory.read_i32_matrix(vmem_space, instr.dst, m, n).astype(np.int64)
+            else:
+                c_base = np.zeros((m, n), dtype=np.int64)
 
-        a = self.memory.read_i8_matrix(vmem_space, instr.src0, m, k).astype(np.int64)
-        b = self.memory.read_i8_matrix(vmem_space, instr.src1, k, n).astype(np.int64)
-        if instr.flags & MATMUL_FLAG_ACCUMULATE:
-            c_base = self.memory.read_i32_matrix(vmem_space, instr.dst, m, n).astype(np.int64)
-        else:
-            c_base = np.zeros((m, n), dtype=np.int64)
-
-        result = wrap_i32(c_base + (a @ b))
-        self.memory.write_i32_matrix(vmem_space, instr.dst, result)
+            result = wrap_i32(c_base + (a @ b))
+            self.memory.write_i32_matrix(vmem_space, instr.dst, result)
 
     def _execute_vector_op(self, instr: Instruction) -> None:
         if instr.imm0 == 0:
-            return
+            raise ExecutionError("VECTOR_OP length must be nonzero")
         self.counters.vector_active_cycles += max(1, (instr.imm0 + 15) // 16)
-        vmem_space = self._target_vmem_space(instr.target)
         op = VectorOp(instr.imm1)
         length = instr.imm0
-        src0 = self.memory.read_i32_vector(vmem_space, instr.src0, length).astype(np.int64)
+        for vmem_space in self._target_vmem_spaces(instr.target):
+            src0 = self.memory.read_i32_vector(vmem_space, instr.src0, length).astype(np.int64)
 
-        if op == VectorOp.VADD:
-            src1 = self.memory.read_i32_vector(vmem_space, instr.src1, length).astype(np.int64)
-            result = src0 + src1
-        elif op == VectorOp.VMUL:
-            src1 = self.memory.read_i32_vector(vmem_space, instr.src1, length).astype(np.int64)
-            result = src0 * src1
-        elif op == VectorOp.VSCALE:
-            result = src0 * np.int64(_sign_extend_16(instr.imm2))
-        elif op == VectorOp.VRELU:
-            result = np.maximum(src0, 0)
-        elif op == VectorOp.VCLAMP:
-            limit = abs(_sign_extend_16(instr.imm2))
-            result = np.clip(src0, -limit, limit)
-        elif op == VectorOp.VMAX:
-            src1 = self.memory.read_i32_vector(vmem_space, instr.src1, length).astype(np.int64)
-            result = np.maximum(src0, src1)
-        else:
-            raise ExecutionError(f"unsupported VECTOR_OP {op}")
-        self.memory.write_i32_vector(vmem_space, instr.dst, wrap_i32(result))
+            if op == VectorOp.VADD:
+                src1 = self.memory.read_i32_vector(vmem_space, instr.src1, length).astype(np.int64)
+                result = src0 + src1
+            elif op == VectorOp.VMUL:
+                src1 = self.memory.read_i32_vector(vmem_space, instr.src1, length).astype(np.int64)
+                result = src0 * src1
+            elif op == VectorOp.VSCALE:
+                result = src0 * np.int64(_sign_extend_16(instr.imm2))
+            elif op == VectorOp.VRELU:
+                result = np.maximum(src0, 0)
+            elif op == VectorOp.VCLAMP:
+                limit = abs(_sign_extend_16(instr.imm2))
+                result = np.clip(src0, -limit, limit)
+            elif op == VectorOp.VMAX:
+                src1 = self.memory.read_i32_vector(vmem_space, instr.src1, length).astype(np.int64)
+                result = np.maximum(src0, src1)
+            else:
+                raise ExecutionError(f"unsupported VECTOR_OP {op}")
+            self.memory.write_i32_vector(vmem_space, instr.dst, wrap_i32(result))
 
     def _execute_reduce(self, instr: Instruction) -> None:
         if instr.imm0 == 0:
-            return
+            raise ExecutionError("REDUCE length must be nonzero")
         self.counters.reduce_active_cycles += max(1, (instr.imm0 + 15) // 16)
-        vmem_space = self._target_vmem_space(instr.target)
         op = ReduceOp(instr.imm1)
         length = instr.imm0
 
-        if op in {ReduceOp.SUM_ALL, ReduceOp.MAX_ALL}:
-            values = self.memory.read_i32_vector(vmem_space, instr.src0, length).astype(np.int64)
-            result = np.array([values.sum() if op == ReduceOp.SUM_ALL else values.max()], dtype=np.int64)
-        else:
-            columns = instr.imm2
-            if columns == 0 or length % columns != 0:
-                raise ExecutionError("row/column REDUCE requires imm0 rows*columns and nonzero imm2 columns")
-            matrix = self.memory.read_i32_vector(vmem_space, instr.src0, length).astype(np.int64).reshape(length // columns, columns)
-            if op == ReduceOp.SUM_ROWS:
-                result = matrix.sum(axis=1)
-            elif op == ReduceOp.MAX_ROWS:
-                result = matrix.max(axis=1)
-            elif op == ReduceOp.SUM_COLS:
-                result = matrix.sum(axis=0)
-            elif op == ReduceOp.MAX_COLS:
-                result = matrix.max(axis=0)
+        for vmem_space in self._target_vmem_spaces(instr.target):
+            if op in {ReduceOp.SUM_ALL, ReduceOp.MAX_ALL}:
+                values = self.memory.read_i32_vector(vmem_space, instr.src0, length).astype(np.int64)
+                result = np.array([values.sum() if op == ReduceOp.SUM_ALL else values.max()], dtype=np.int64)
             else:
-                raise ExecutionError(f"unsupported REDUCE {op}")
-        self.memory.write_i32_vector(vmem_space, instr.dst, wrap_i32(result))
+                columns = instr.imm2
+                if columns == 0 or length % columns != 0:
+                    raise ExecutionError("row/column REDUCE requires imm0 rows*columns and nonzero imm2 columns")
+                matrix = self.memory.read_i32_vector(vmem_space, instr.src0, length).astype(np.int64).reshape(length // columns, columns)
+                if op == ReduceOp.SUM_ROWS:
+                    result = matrix.sum(axis=1)
+                elif op == ReduceOp.MAX_ROWS:
+                    result = matrix.max(axis=1)
+                elif op == ReduceOp.SUM_COLS:
+                    result = matrix.sum(axis=0)
+                elif op == ReduceOp.MAX_COLS:
+                    result = matrix.max(axis=0)
+                else:
+                    raise ExecutionError(f"unsupported REDUCE {op}")
+            self.memory.write_i32_vector(vmem_space, instr.dst, wrap_i32(result))
 
-    def _target_vmem_space(self, target: int) -> AddressSpace:
+    def _target_vmem_spaces(self, target: int) -> list[AddressSpace]:
         tc_mask = (target >> 4) & 0xF
         unit_mask = target & 0xF
         if unit_mask > 0xF:
             raise ExecutionError(f"invalid unit target 0x{target:02x}")
-        if tc_mask == 0x1:
-            return AddressSpace.VMEM0
-        if tc_mask == 0x2:
-            return AddressSpace.VMEM1
-        raise ExecutionError(f"golden model supports one TensorCore target at a time, got 0x{target:02x}")
+        spaces: list[AddressSpace] = []
+        if tc_mask & 0x1:
+            spaces.append(AddressSpace.VMEM0)
+        if tc_mask & 0x2:
+            spaces.append(AddressSpace.VMEM1)
+        if tc_mask & ~0x3:
+            raise ExecutionError(f"golden model supports TC0/TC1 targets, got 0x{target:02x}")
+        if not spaces:
+            raise ExecutionError(f"target selects no TensorCore, got 0x{target:02x}")
+        return spaces
 
     def _require_aligned(self, *values: int) -> None:
         for value in values:

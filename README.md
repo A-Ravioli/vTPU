@@ -13,7 +13,8 @@ The first implemented milestone is intentionally small:
 - packed-tile 64x64 matmul and single-tile MLP lowering examples
 - Python 3D mesh/torus architectural simulator
 - golden-model performance counters
-- SystemVerilog package and initial PE/MXU RTL modules
+- structural SystemVerilog top using shared instruction, control, memory, DMA, TensorCore, MXU, vector, reduce, and counter modules
+- RTL CMEM/VMEM0/VMEM1/HBM data movement, TC0/TC1 target-local execution, target masks, and MMIO counters
 - pytest-based Python verification
 - Verilator lint and cocotb unit-test harness
 
@@ -44,11 +45,11 @@ src/virtual_tpu/   Python ISA, assembler, memory model, golden executor
 compiler/          Compatibility wrappers for the compiler package layout in docs
 rtl/               SystemVerilog packages and initial RTL modules
 tests/python/      pytest tests for the executable golden contract
-tests/cocotb/      cocotb test skeleton for RTL simulation
+tests/cocotb/      cocotb tests for RTL simulation
 tests/rtl/         pytest wrapper for cocotb/Verilator tests
 examples/          Small runnable programs
 ```
 
 ## Current Scope
 
-The implemented path covers the verified Python roadmap through tiled matmul, vector/reduce, bf16 reference math, MLP lowering, counters, and archsim. The RTL is lint-clean under Verilator and has a cocotb PE test harness, with deeper VMEM-fed MXU/chip data-path tests still to be added.
+The implemented path covers the verified Python roadmap through tiled matmul, vector/reduce, bf16 reference math, MLP lowering, two-TensorCore split-output examples, CMEM-staged examples, counters, and archsim. The RTL is lint-clean under Verilator and has cocotb coverage for the PE, systolic array, MXU, VMEM, CMEM, HBM, DMA, decoder/control FSM, TensorCore, vector unit, reduce unit, plus chip-level int8 matmul, VMEM1/TC1 targeting, CMEM-staged DMA, multi-MXU scheduling, vector/reduce datapaths, BF16 rejection, and MMIO performance counters. BF16 remains Python-reference-only for now.

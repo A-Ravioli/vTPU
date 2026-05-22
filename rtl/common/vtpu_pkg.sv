@@ -7,12 +7,48 @@ package vtpu_pkg;
   parameter int VTPU_HBM_WRITE_LATENCY = 80;
   parameter int VTPU_HBM_BYTES_PER_CYCLE = 32;
 
+  localparam logic [31:0] VTPU_REG_CONTROL = 32'h0000_0000;
+  localparam logic [31:0] VTPU_REG_STATUS = 32'h0000_0004;
+  localparam logic [31:0] VTPU_REG_ERROR_CODE = 32'h0000_0008;
+  localparam logic [31:0] VTPU_REG_PC = 32'h0000_000C;
+  localparam logic [31:0] VTPU_COUNTER_BASE = 32'h0000_0100;
+  localparam logic [31:0] VTPU_INSTR_BASE = 32'h0000_1000;
+  localparam logic [31:0] VTPU_HBM_BASE = 32'h0010_0000;
+
+  localparam int VTPU_COUNTER_CYCLES = 0;
+  localparam int VTPU_COUNTER_INSTRUCTIONS = 1;
+  localparam int VTPU_COUNTER_DMA_BYTES = 2;
+  localparam int VTPU_COUNTER_DMA_ACTIVE = 3;
+  localparam int VTPU_COUNTER_HBM_STALL = 4;
+  localparam int VTPU_COUNTER_CMEM_ACCESSES = 5;
+  localparam int VTPU_COUNTER_VMEM_ACCESSES = 6;
+  localparam int VTPU_COUNTER_VMEM_BANK_CONFLICTS = 7;
+  localparam int VTPU_COUNTER_MXU_ACTIVE = 8;
+  localparam int VTPU_COUNTER_VECTOR_ACTIVE = 9;
+  localparam int VTPU_COUNTER_REDUCE_ACTIVE = 10;
+  localparam int VTPU_COUNTER_BARRIER_WAIT = 11;
+  localparam int VTPU_COUNTER_ERRORS = 12;
+  localparam int VTPU_COUNTER_TC0_ACTIVE = 13;
+  localparam int VTPU_COUNTER_TC1_ACTIVE = 14;
+  localparam int VTPU_COUNTER_TC0_MXU0_ACTIVE = 15;
+  localparam int VTPU_COUNTER_TC0_MXU1_ACTIVE = 16;
+  localparam int VTPU_COUNTER_TC0_MXU2_ACTIVE = 17;
+  localparam int VTPU_COUNTER_TC0_MXU3_ACTIVE = 18;
+  localparam int VTPU_COUNTER_TC1_MXU0_ACTIVE = 19;
+  localparam int VTPU_COUNTER_TC1_MXU1_ACTIVE = 20;
+  localparam int VTPU_COUNTER_TC1_MXU2_ACTIVE = 21;
+  localparam int VTPU_COUNTER_TC1_MXU3_ACTIVE = 22;
+  localparam int VTPU_COUNTER_DMA_IDLE = 23;
+  localparam int VTPU_COUNTER_MXU_IDLE = 24;
+  localparam int VTPU_COUNTER_VECTOR_IDLE = 25;
+  localparam int VTPU_COUNTER_REDUCE_IDLE = 26;
+  localparam int VTPU_NUM_COUNTERS = 27;
+
   localparam logic [7:0] MATMUL_FLAG_ACCUMULATE = 8'h01;
   localparam logic [7:0] MATMUL_FLAG_SIGNED = 8'h08;
   localparam logic [7:0] MATMUL_FLAG_BF16 = 8'h20;
   localparam logic [7:0] MATMUL_SUPPORTED_FLAGS = MATMUL_FLAG_ACCUMULATE |
-                                                  MATMUL_FLAG_SIGNED |
-                                                  MATMUL_FLAG_BF16;
+                                                  MATMUL_FLAG_SIGNED;
 
   typedef enum logic [7:0] {
     OPC_NOP        = 8'h00,
@@ -80,7 +116,8 @@ package vtpu_pkg;
     ERR_BAD_ADDR = 8'h04,
     ERR_UNALIGNED = 8'h05,
     ERR_BUSY = 8'h06,
-    ERR_UNSUPPORTED = 8'h07
+    ERR_UNSUPPORTED = 8'h07,
+    ERR_TIMEOUT = 8'h08
   } error_code_t;
 
   typedef struct packed {

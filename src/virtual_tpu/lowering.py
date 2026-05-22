@@ -2,7 +2,16 @@ from __future__ import annotations
 
 import numpy as np
 
-from virtual_tpu.programs import Matmul16Layout, TiledMatmulLayout, matmul_16_program, matmul_tiled_packed_program
+from virtual_tpu.programs import (
+    Matmul16Layout,
+    SplitOutputMatmulLayout,
+    TiledMatmulLayout,
+    cmem_staged_matmul_16_program,
+    matmul_16_program,
+    matmul_tiled_packed_program,
+    multi_mxu_tiled_matmul_program,
+    split_output_two_tc_matmul_program,
+)
 
 
 def lower_single_tile_matmul_16(layout: Matmul16Layout | None = None):
@@ -15,6 +24,24 @@ def lower_packed_tiled_matmul(layout: TiledMatmulLayout | None = None):
     """Return a serial program for compiler-managed packed tile layout."""
 
     return matmul_tiled_packed_program(layout)
+
+
+def lower_cmem_staged_matmul_16(layout: Matmul16Layout | None = None):
+    """Return a 16x16 matmul program that stages input tiles through shared CMEM."""
+
+    return cmem_staged_matmul_16_program(layout)
+
+
+def lower_split_output_two_tc_matmul(layout: SplitOutputMatmulLayout | None = None):
+    """Return a two-TensorCore program that computes two output tiles in parallel address spaces."""
+
+    return split_output_two_tc_matmul_program(layout)
+
+
+def lower_multi_mxu_tiled_matmul(layout: TiledMatmulLayout | None = None):
+    """Return a packed tiled matmul program using target masks that allow any TC0 MXU."""
+
+    return multi_mxu_tiled_matmul_program(layout)
 
 
 def pack_int8_tiles(matrix: np.ndarray, tile: int = 16) -> bytes:

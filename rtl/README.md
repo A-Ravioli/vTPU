@@ -5,13 +5,13 @@ The RTL in this repository is an educational simplification that follows the ear
 Implemented now:
 
 - `vtpu_pkg.sv` common custom ISA and command/status types
+- `perf_counters.sv` shared 64-bit MMIO counter block
 - `pe_int8.sv` one-cycle signed int8 multiply-accumulate PE
 - `systolic_array.sv` command-level tiled int8/int32 matmul block
-- `mxu_top.sv` initial MXU wrapper around the tiled array
-- `instr_decoder.sv` fixed-width instruction decoder and MVP legality checks
-- `instr_mem.sv` and `control_fsm.sv` instruction/control shells
-- `vmem_bank.sv`, `vmem_top.sv`, `hbm_model.sv`, and `dma_engine.sv` memory/DMA shells
-- `tensor_core.sv`, `vector_unit.sv`, and `reduce_unit.sv` unit routing/status shells
-- `virtual_tpu_v4_top.sv` top-level status shell
+- `mxu_top.sv` VMEM-backed scalar-scheduled MXU datapath
+- `instr_decoder.sv`, `instr_mem.sv`, and `control_fsm.sv` threaded into the executable top
+- `vmem_top.sv`, `cmem_top.sv`, `hbm_model.sv`, and `dma_engine.sv` request/response memory path
+- `tensor_core.sv`, `vector_unit.sv`, and `reduce_unit.sv` VMEM-connected datapaths with four MXUs per TensorCore
+- `virtual_tpu_v4_top.sv` structural chip top with HBM, CMEM, two TensorCores, DMA, control, and counters
 
-The Python golden model is the executable source of truth for full-program behavior. The RTL currently lint-checks under Verilator and has a cocotb PE test path; later work should connect byte-accurate VMEM/HBM data paths through the MXU and chip top.
+The Python golden model is the executable source of truth for full-program behavior. The RTL currently lint-checks under Verilator and has cocotb coverage for PE behavior, the standalone RTL unit matrix, HBM-visible 16x16 matmul, TC1/VMEM1 targeting, CMEM staging, multi-MXU auto-scheduling, MLP-style vector execution, reductions, error handling, and host-readable counters. BF16 remains rejected in RTL and available only in the Python reference path.

@@ -65,6 +65,71 @@ def matmul_16_program(layout: Matmul16Layout | None = None) -> list[Instruction]
     ]
 
 
+def cmem_staged_matmul_16_program(layout: Matmul16Layout | None = None) -> list[Instruction]:
+    """16x16 matmul with HBM -> CMEM -> VMEM staging for both input tiles."""
+
+    layout = layout or Matmul16Layout()
+    cmem_a = 0x0000
+    cmem_b = 0x0100
+    return [
+        dma_copy(dst=MemoryRef(AddressSpace.CMEM, cmem_a), src=MemoryRef(AddressSpace.HBM, layout.hbm_a), length=layout.tile_bytes),
+        dma_copy(dst=MemoryRef(AddressSpace.CMEM, cmem_b), src=MemoryRef(AddressSpace.HBM, layout.hbm_b), length=layout.tile_bytes),
+        dma_copy(dst=MemoryRef(AddressSpace.VMEM0, layout.vmem_a), src=MemoryRef(AddressSpace.CMEM, cmem_a), length=layout.tile_bytes),
+        dma_copy(dst=MemoryRef(AddressSpace.VMEM0, layout.vmem_b), src=MemoryRef(AddressSpace.CMEM, cmem_b), length=layout.tile_bytes),
+        barrier(UnitMask.DMA),
+        clear(dst=MemoryRef(AddressSpace.VMEM0, layout.vmem_c), length=layout.result_bytes),
+        matmul(
+            dst_addr=layout.vmem_c,
+            src_a_addr=layout.vmem_a,
+            src_b_addr=layout.vmem_b,
+            m=16,
+            n=16,
+            k=16,
+            target=0x1F,
+        ),
+        barrier(UnitMask.MXU),
+        dma_copy(dst=MemoryRef(AddressSpace.HBM, layout.hbm_c), src=MemoryRef(AddressSpace.VMEM0, layout.vmem_c), length=layout.result_bytes),
+        barrier(UnitMask.DMA),
+        halt(),
+    ]
+
+
+@dataclass(frozen=True)
+class SplitOutputMatmulLayout:
+    hbm_a: int = 0x0000
+    hbm_b0: int = 0x0100
+    hbm_b1: int = 0x0200
+    hbm_c0: int = 0x1000
+    hbm_c1: int = 0x1400
+    vmem_a: int = 0x0000
+    vmem_b: int = 0x0100
+    vmem_c: int = 0x0200
+    tile_bytes: int = 16 * 16
+    result_bytes: int = 16 * 16 * 4
+
+
+def split_output_two_tc_matmul_program(layout: SplitOutputMatmulLayout | None = None) -> list[Instruction]:
+    """Compute two independent 16x16 output tiles across TC0/VMEM0 and TC1/VMEM1."""
+
+    layout = layout or SplitOutputMatmulLayout()
+    return [
+        dma_copy(dst=MemoryRef(AddressSpace.VMEM0, layout.vmem_a), src=MemoryRef(AddressSpace.HBM, layout.hbm_a), length=layout.tile_bytes),
+        dma_copy(dst=MemoryRef(AddressSpace.VMEM1, layout.vmem_a), src=MemoryRef(AddressSpace.HBM, layout.hbm_a), length=layout.tile_bytes),
+        dma_copy(dst=MemoryRef(AddressSpace.VMEM0, layout.vmem_b), src=MemoryRef(AddressSpace.HBM, layout.hbm_b0), length=layout.tile_bytes),
+        dma_copy(dst=MemoryRef(AddressSpace.VMEM1, layout.vmem_b), src=MemoryRef(AddressSpace.HBM, layout.hbm_b1), length=layout.tile_bytes),
+        barrier(UnitMask.DMA),
+        clear(dst=MemoryRef(AddressSpace.VMEM0, layout.vmem_c), length=layout.result_bytes),
+        clear(dst=MemoryRef(AddressSpace.VMEM1, layout.vmem_c), length=layout.result_bytes),
+        matmul(dst_addr=layout.vmem_c, src_a_addr=layout.vmem_a, src_b_addr=layout.vmem_b, m=16, n=16, k=16, target=0x10),
+        matmul(dst_addr=layout.vmem_c, src_a_addr=layout.vmem_a, src_b_addr=layout.vmem_b, m=16, n=16, k=16, target=0x20),
+        barrier(UnitMask.MXU),
+        dma_copy(dst=MemoryRef(AddressSpace.HBM, layout.hbm_c0), src=MemoryRef(AddressSpace.VMEM0, layout.vmem_c), length=layout.result_bytes),
+        dma_copy(dst=MemoryRef(AddressSpace.HBM, layout.hbm_c1), src=MemoryRef(AddressSpace.VMEM1, layout.vmem_c), length=layout.result_bytes),
+        barrier(UnitMask.DMA),
+        halt(),
+    ]
+
+
 @dataclass(frozen=True)
 class TiledMatmulLayout:
     m: int = 64
@@ -157,6 +222,27 @@ def matmul_tiled_packed_program(layout: TiledMatmulLayout | None = None) -> list
             program.append(barrier(UnitMask.DMA))
     program.append(halt())
     return program
+
+
+def multi_mxu_tiled_matmul_program(layout: TiledMatmulLayout | None = None) -> list[Instruction]:
+    """Packed tiled matmul using the TC0 all-MXU target mask for each tile command."""
+
+    program = matmul_tiled_packed_program(layout)
+    return [
+        Instruction(
+            opcode=instr.opcode,
+            flags=instr.flags,
+            target=0x1F if instr.opcode == 0x04 else instr.target,
+            reserved=instr.reserved,
+            dst=instr.dst,
+            src0=instr.src0,
+            src1=instr.src1,
+            imm0=instr.imm0,
+            imm1=instr.imm1,
+            imm2=instr.imm2,
+        )
+        for instr in program
+    ]
 
 
 def mlp_single_tile_program(
