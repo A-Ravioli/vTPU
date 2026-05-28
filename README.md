@@ -1,6 +1,6 @@
 # Virtual TPU v4-Inspired Educational Accelerator
 
-This repository builds an open, educational accelerator inspired by public TPU v4 architecture. It is **not** a Google TPU clone, it does not model proprietary TPU internals, and it is not compatible with a real TPU ISA. The project contract is explicit about what is a public fact, what is an inference, and what is an educational simplification: start with [docs/00_PUBLIC_CONTRACT.md](docs/00_PUBLIC_CONTRACT.md).
+This repository builds an open, educational accelerator inspired by public TPU v4 architecture.
 
 The guiding question is simple:
 
