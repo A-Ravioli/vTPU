@@ -1,5 +1,5 @@
-export DESIGN_NICKNAME = vtpu_pd_tiny
-export DESIGN_NAME = vtpu_pd_tiny_top
+export DESIGN_NICKNAME = vtpu_pd_smoke
+export DESIGN_NAME = vtpu_pd_smoke_top
 export PLATFORM = sky130hd
 export VTPU_REPO_ROOT = $(abspath $(dir $(DESIGN_CONFIG))/../../../../..)
 
@@ -22,14 +22,14 @@ export VERILOG_FILES = \
   $(VTPU_REPO_ROOT)/rtl/memory/vmem_top.sv \
   $(VTPU_REPO_ROOT)/rtl/top/virtual_tpu_v4_top.sv \
   $(VTPU_REPO_ROOT)/rtl/physical/physical_memories.sv \
-  $(VTPU_REPO_ROOT)/rtl/physical/vtpu_pd_tiny_top.sv
+  $(VTPU_REPO_ROOT)/rtl/physical/vtpu_pd_smoke_top.sv
 
-export SDC_FILE = $(VTPU_REPO_ROOT)/physical/openroad/designs/sky130hd/vtpu_pd_tiny/constraint.sdc
+export SDC_FILE = $(VTPU_REPO_ROOT)/physical/openroad/designs/sky130hd/vtpu_pd_smoke/constraint.sdc
 export VERILOG_INCLUDE_DIRS = $(VTPU_REPO_ROOT)/rtl/common
 export SYNTH_HDL_FRONTEND = slang
 export SYNTH_SLANG_ARGS = --std 1800-2017
 
-export PLACE_DENSITY = 0.35
+export PLACE_DENSITY = 0.25
 export TNS_END_PERCENT = 0
 export REMOVE_ABC_BUFFERS = 1
 export SKIP_CTS_REPAIR_TIMING = 1
@@ -37,9 +37,11 @@ export SKIP_INCREMENTAL_REPAIR = 1
 export SKIP_LAST_GASP = 1
 export SETUP_SLACK_MARGIN = -100
 export HOLD_SLACK_MARGIN = -100
+export MAX_REPAIR_ANTENNAS_ITER_GRT = 2
+export MAX_REPAIR_ANTENNAS_ITER_DRT = 1
 
-export DIE_AREA = 0 0 2200 2200
-export CORE_AREA = 100 100 2100 2100
+export DIE_AREA = 0 0 1400 1400
+export CORE_AREA = 80 80 1320 1320
 
 export ABC_AREA = 1
 export SYNTH_HIERARCHICAL = 1

@@ -140,6 +140,12 @@ module virtual_tpu_v4_top #(
 
   integer inc_idx;
 
+  function automatic logic mxu_busy_at(input logic [MXUS_PER_TC-1:0] mask, input int unsigned index);
+    begin
+      mxu_busy_at = (index < MXUS_PER_TC) ? mask[index] : 1'b0;
+    end
+  endfunction
+
   assign host_req_ready = 1'b1;
   assign host_resp = host_resp_q;
   assign host_resp_valid = host_resp_q.valid;
@@ -439,14 +445,14 @@ module virtual_tpu_v4_top #(
     counter_inc[vtpu_pkg::VTPU_COUNTER_ERRORS] = {63'd0, control_error_pulse};
     counter_inc[vtpu_pkg::VTPU_COUNTER_TC0_ACTIVE] = {63'd0, tc_status[0].busy};
     counter_inc[vtpu_pkg::VTPU_COUNTER_TC1_ACTIVE] = {63'd0, tc_status[1].busy};
-    counter_inc[vtpu_pkg::VTPU_COUNTER_TC0_MXU0_ACTIVE] = {63'd0, tc0_mxu_busy[0]};
-    counter_inc[vtpu_pkg::VTPU_COUNTER_TC0_MXU1_ACTIVE] = {63'd0, tc0_mxu_busy[1]};
-    counter_inc[vtpu_pkg::VTPU_COUNTER_TC0_MXU2_ACTIVE] = {63'd0, tc0_mxu_busy[2]};
-    counter_inc[vtpu_pkg::VTPU_COUNTER_TC0_MXU3_ACTIVE] = {63'd0, tc0_mxu_busy[3]};
-    counter_inc[vtpu_pkg::VTPU_COUNTER_TC1_MXU0_ACTIVE] = {63'd0, tc1_mxu_busy[0]};
-    counter_inc[vtpu_pkg::VTPU_COUNTER_TC1_MXU1_ACTIVE] = {63'd0, tc1_mxu_busy[1]};
-    counter_inc[vtpu_pkg::VTPU_COUNTER_TC1_MXU2_ACTIVE] = {63'd0, tc1_mxu_busy[2]};
-    counter_inc[vtpu_pkg::VTPU_COUNTER_TC1_MXU3_ACTIVE] = {63'd0, tc1_mxu_busy[3]};
+    counter_inc[vtpu_pkg::VTPU_COUNTER_TC0_MXU0_ACTIVE] = {63'd0, mxu_busy_at(tc0_mxu_busy, 0)};
+    counter_inc[vtpu_pkg::VTPU_COUNTER_TC0_MXU1_ACTIVE] = {63'd0, mxu_busy_at(tc0_mxu_busy, 1)};
+    counter_inc[vtpu_pkg::VTPU_COUNTER_TC0_MXU2_ACTIVE] = {63'd0, mxu_busy_at(tc0_mxu_busy, 2)};
+    counter_inc[vtpu_pkg::VTPU_COUNTER_TC0_MXU3_ACTIVE] = {63'd0, mxu_busy_at(tc0_mxu_busy, 3)};
+    counter_inc[vtpu_pkg::VTPU_COUNTER_TC1_MXU0_ACTIVE] = {63'd0, mxu_busy_at(tc1_mxu_busy, 0)};
+    counter_inc[vtpu_pkg::VTPU_COUNTER_TC1_MXU1_ACTIVE] = {63'd0, mxu_busy_at(tc1_mxu_busy, 1)};
+    counter_inc[vtpu_pkg::VTPU_COUNTER_TC1_MXU2_ACTIVE] = {63'd0, mxu_busy_at(tc1_mxu_busy, 2)};
+    counter_inc[vtpu_pkg::VTPU_COUNTER_TC1_MXU3_ACTIVE] = {63'd0, mxu_busy_at(tc1_mxu_busy, 3)};
     counter_inc[vtpu_pkg::VTPU_COUNTER_DMA_IDLE] = {63'd0, control_busy && !dma_status.busy};
     counter_inc[vtpu_pkg::VTPU_COUNTER_MXU_IDLE] = {63'd0, control_busy && !(|tc0_mxu_busy) && !(|tc1_mxu_busy)};
     counter_inc[vtpu_pkg::VTPU_COUNTER_VECTOR_IDLE] = {63'd0, control_busy && !tc0_vector_busy && !tc1_vector_busy};

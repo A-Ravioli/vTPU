@@ -156,6 +156,7 @@ That path is the heart of the repo: a program is data movement plus local comput
 - BF16/FP32 Python reference path.
 - Packed-tile 64x64 matmul and single-tile MLP lowering examples.
 - Python 3D mesh/torus architectural simulator.
+- Structured tiny-target layout search with JSONL experiment logs and OpenROAD fragments.
 - Golden-model performance counters.
 - Structural SystemVerilog chip top with instruction, control, memory, DMA, TensorCore, MXU, vector, reduce, and counter modules.
 - RTL CMEM/VMEM0/VMEM1/HBM data movement.
@@ -190,6 +191,7 @@ examples/          Small runnable programs
 - Compiler and assembler: [docs/10_COMPILER_ASSEMBLER.md](docs/10_COMPILER_ASSEMBLER.md)
 - Example programs: [docs/11_EXAMPLE_PROGRAMS.md](docs/11_EXAMPLE_PROGRAMS.md)
 - Multi-chip archsim: [docs/12_ARCHSIM_MULTI_CHIP.md](docs/12_ARCHSIM_MULTI_CHIP.md)
+- Layout search: [docs/13_LAYOUT_SEARCH.md](docs/13_LAYOUT_SEARCH.md)
 
 ## Development Philosophy
 

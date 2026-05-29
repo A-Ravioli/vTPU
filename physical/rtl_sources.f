@@ -17,3 +17,5 @@ rtl/memory/vmem_top.sv
 rtl/top/virtual_tpu_v4_top.sv
 rtl/physical/physical_memories.sv
 rtl/physical/vtpu_pd_tiny_top.sv
+rtl/physical/vtpu_pd_smoke_top.sv
+rtl/physical/vtpu_pd_mxu_gds_top.sv

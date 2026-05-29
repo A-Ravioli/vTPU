@@ -39,6 +39,7 @@ module tensor_core #(
   output logic [31:0] vmem_bank_conflict_count_pulse
 );
   typedef enum logic [1:0] {CLEAR_IDLE, CLEAR_RUN, CLEAR_DONE, CLEAR_ERROR} clear_state_t;
+  localparam int MXU_IDX_W = (MXUS_PER_TC <= 1) ? 1 : $clog2(MXUS_PER_TC);
 
   vtpu_pkg::mxu_cmd_t mxu_cmd;
   vtpu_pkg::mxu_cmd_t mxu_cmd_q [MXUS_PER_TC];
@@ -72,8 +73,8 @@ module tensor_core #(
   logic [MXUS_PER_TC-1:0] eligible_mask;
   logic [MXUS_PER_TC-1:0] busy_mask;
   logic [MXUS_PER_TC-1:0] error_mask;
-  logic [$clog2(MXUS_PER_TC)-1:0] rr_ptr_q;
-  logic [$clog2(MXUS_PER_TC)-1:0] chosen_mxu;
+  logic [MXU_IDX_W-1:0] rr_ptr_q;
+  logic [MXU_IDX_W-1:0] chosen_mxu;
   logic chosen_valid;
   logic local_selected;
   logic unsupported_q;
@@ -170,7 +171,7 @@ module tensor_core #(
       probe = (int'(rr_ptr_q) + idx) % MXUS_PER_TC;
       if (!chosen_valid && eligible_mask[probe]) begin
         chosen_valid = 1'b1;
-        chosen_mxu = probe[$clog2(MXUS_PER_TC)-1:0];
+        chosen_mxu = probe[MXU_IDX_W-1:0];
       end
     end
 
