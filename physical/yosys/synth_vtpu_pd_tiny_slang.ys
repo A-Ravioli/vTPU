@@ -1,6 +1,6 @@
 plugin -i slang
 
-read_slang --std 1800-2017 --top vtpu_pd_tiny_top -Irtl/common -f physical/rtl_sources.f
+read_slang --std 1800-2017 -DVTPU_PHYSICAL_SRAM_MACROS --top vtpu_pd_tiny_top -Irtl/common -f physical/rtl_sources.f
 
 hierarchy -check -top vtpu_pd_tiny_top
 proc

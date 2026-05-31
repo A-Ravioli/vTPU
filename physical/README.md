@@ -86,6 +86,16 @@ The design config lives at:
 physical/openroad/designs/sky130hd/vtpu_pd_tiny/config.mk
 ```
 
+The tiny target now uses the Sky130 OpenRAM macro bundled with ORFS at:
+
+```text
+platforms/sky130ram/sky130_sram_1rw1r_80x64_8
+```
+
+`config.mk` loads that macro's LEF, Liberty, and GDS views and uses
+`macro_placement.tcl` to place CMEM, VMEM, and instruction-memory macro
+instances. HBM remains an external/latency-only physical shell.
+
 The timing constraints live at:
 
 ```text

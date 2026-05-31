@@ -1,4 +1,5 @@
-from __future__ import annotations
+# virtual tpu instruction set: opcodes, 128-bit encoding, and python helpers to build instructions
+from __future__ import annotations  # forward refs in type hints (e.g. Instruction.decode return type)
 
 from dataclasses import dataclass
 from enum import IntEnum, IntFlag
@@ -9,35 +10,41 @@ class ISAError(ValueError):
 
 
 class Opcode(IntEnum):
+    """numeric opcodes — must stay in sync with rtl/vtpu_pkg.sv."""
+
     NOP = 0x00
-    LOAD_TILE = 0x01
-    STORE_TILE = 0x02
-    DMA_COPY = 0x03
+    LOAD_TILE = 0x01  # dma alias: load a tile into local memory
+    STORE_TILE = 0x02  # dma alias: store a tile back out
+    DMA_COPY = 0x03  # explicit copy between address spaces
     MATMUL = 0x04
-    VECTOR_OP = 0x05
-    REDUCE = 0x06
-    BARRIER = 0x07
-    INFEED = 0x08
-    OUTFEED = 0x09
-    CLEAR = 0x0A
+    VECTOR_OP = 0x05  # elementwise ops on vmem (vadd, relu, ...)
+    REDUCE = 0x06  # sum/max over rows/cols/all
+    BARRIER = 0x07  # wait until listed units are idle
+    INFEED = 0x08  # host -> chip ingress (mvp placeholder)
+    OUTFEED = 0x09  # chip -> host egress
+    CLEAR = 0x0A  # zero a byte range in one memory space
     CONFIG = 0x0B
     SYNC = 0x0C
-    HALT = 0xFF
+    HALT = 0xFF  # end program
 
 
 class AddressSpace(IntEnum):
-    HBM = 0
-    CMEM = 1
-    VMEM0 = 2
-    VMEM1 = 3
+    """which memory bank an address refers to (encoded in dma flags or clear flags)."""
+
+    HBM = 0  # high-bandwidth / bulk off-chip style memory
+    CMEM = 1  # chip-level staging between hbm and tensor cores
+    VMEM0 = 2  # tensor core 0 scratch
+    VMEM1 = 3  # tensor core 1 scratch
     INFEED = 4
     OUTFEED = 5
 
 
 class UnitMask(IntFlag):
+    """bitmask for BARRIER: which execution units must finish before continuing."""
+
     DMA = 1 << 0
-    MXU = 1 << 1
-    VPU = 1 << 2
+    MXU = 1 << 1  # matrix multiply unit
+    VPU = 1 << 2  # vector unit
     REDUCE = 1 << 3
     IO = 1 << 4
     ALL_TENSOR_CORES = 1 << 5
@@ -45,6 +52,8 @@ class UnitMask(IntFlag):
 
 
 class VectorOp(IntEnum):
+    """sub-opcode for VECTOR_OP; stored in instruction imm1."""
+
     VADD = 0
     VMUL = 1
     VSCALE = 2
@@ -54,6 +63,8 @@ class VectorOp(IntEnum):
 
 
 class ReduceOp(IntEnum):
+    """sub-opcode for REDUCE; stored in instruction imm1."""
+
     SUM_ALL = 0
     MAX_ALL = 1
     SUM_ROWS = 2
@@ -62,25 +73,27 @@ class ReduceOp(IntEnum):
     MAX_COLS = 5
 
 
-MATMUL_FLAG_ACCUMULATE = 1 << 0
+# matmul modifier bits packed into the instruction flags byte
+MATMUL_FLAG_ACCUMULATE = 1 << 0  # add into existing dst instead of overwrite
 MATMUL_FLAG_TRANSPOSE_A = 1 << 1
 MATMUL_FLAG_TRANSPOSE_B = 1 << 2
-MATMUL_FLAG_SIGNED = 1 << 3
+MATMUL_FLAG_SIGNED = 1 << 3  # int8 path (default on in matmul builder)
 MATMUL_FLAG_FIXED_POINT = 1 << 4
 MATMUL_FLAG_BF16 = 1 << 5
 MATMUL_FLAG_SATURATE_STORE = 1 << 6
 
-SUPPORTED_MATMUL_FLAGS = MATMUL_FLAG_ACCUMULATE | MATMUL_FLAG_SIGNED | MATMUL_FLAG_BF16
+SUPPORTED_MATMUL_FLAGS = MATMUL_FLAG_ACCUMULATE | MATMUL_FLAG_SIGNED | MATMUL_FLAG_BF16  # mvp subset
 
+# one 128-bit instruction word: (field name, bit shift from lsb, mask)
 FIELD_LAYOUT = (
     ("opcode", 120, 0xFF),
     ("flags", 112, 0xFF),
-    ("target", 104, 0xFF),
+    ("target", 104, 0xFF),  # high nibble: tensor core(s); low nibble: unit(s)
     ("reserved", 96, 0xFF),
     ("dst", 80, 0xFFFF),
     ("src0", 64, 0xFFFF),
     ("src1", 48, 0xFFFF),
-    ("imm0", 32, 0xFFFF),
+    ("imm0", 32, 0xFFFF),  # meaning depends on opcode (length, m, ...)
     ("imm1", 16, 0xFFFF),
     ("imm2", 0, 0xFFFF),
 )
@@ -88,16 +101,20 @@ FIELD_LAYOUT = (
 
 @dataclass(frozen=True)
 class MemoryRef:
+    """pointer to a byte offset inside a specific address space (used by dma_copy / clear)."""
+
     space: AddressSpace
     addr: int
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "space", AddressSpace(self.space))
+        object.__setattr__(self, "space", AddressSpace(self.space))  # coerce int -> enum
         _require_range("addr", self.addr, 32)
 
 
 @dataclass(frozen=True)
 class Instruction:
+    """decoded instruction fields; pack/unpack into 16 big-endian bytes for sim + rtl."""
+
     opcode: int
     flags: int = 0
     target: int = 0
@@ -121,6 +138,7 @@ class Instruction:
             raise ISAError(f"illegal opcode 0x{self.opcode:02x}") from exc
 
     def encode(self) -> int:
+        """pack all fields into a single 128-bit integer (msb = opcode)."""
         value = 0
         for name, shift, mask in FIELD_LAYOUT:
             value |= (getattr(self, name) & mask) << shift
@@ -156,6 +174,8 @@ class Instruction:
 
 
 def pack_dma_flags(src_space: AddressSpace, dst_space: AddressSpace) -> int:
+    """low 3 bits = src space, next 3 bits = dst space (fits in flags byte)."""
+
     src = AddressSpace(src_space).value
     dst = AddressSpace(dst_space).value
     return src | (dst << 3)
@@ -177,6 +197,8 @@ def dma_copy(
     length: int,
     opcode: Opcode = Opcode.DMA_COPY,
 ) -> Instruction:
+    """build a dma (or load/store tile alias): copy length bytes src -> dst."""
+
     if length > 0xFFFF:
         raise ISAError("MVP DMA length must fit imm0")
     if dst.addr > 0xFFFF or src.addr > 0xFFFF:
@@ -191,6 +213,8 @@ def dma_copy(
 
 
 def clear(*, dst: MemoryRef, length: int) -> Instruction:
+    """zero length bytes starting at dst (space encoded in flags, not pack_dma_flags)."""
+
     if length > 0xFFFF:
         raise ISAError("MVP CLEAR length must fit imm0")
     if dst.addr > 0xFFFF:
@@ -211,10 +235,12 @@ def matmul(
     m: int,
     n: int,
     k: int,
-    target: int = 0x10,
+    target: int = 0x10,  # default tc0; see golden _target_vmem_spaces
     accumulate: bool = False,
     bf16: bool = False,
 ) -> Instruction:
+    """c = a @ b with dimensions m×k and k×n -> m×n; addresses are vmem byte offsets."""
+
     for name, value in (
         ("dst_addr", dst_addr),
         ("src_a_addr", src_a_addr),
@@ -244,6 +270,8 @@ def matmul(
 
 
 def barrier(mask: UnitMask | int) -> Instruction:
+    """stall until every unit bit set in mask is done (dma, mxu, vpu, ...)."""
+
     return Instruction(opcode=Opcode.BARRIER.value, imm0=int(mask) & 0xFFFF)
 
 
@@ -251,12 +279,14 @@ def vector_op(
     *,
     dst_addr: int,
     src0_addr: int,
-    src1_addr: int = 0,
+    src1_addr: int = 0,  # unused for unary ops like vrelu
     length: int,
     op: VectorOp | int,
     target: int = 0x10,
-    imm: int = 0,
+    imm: int = 0,  # extra operand for vscale / vclamp etc.
 ) -> Instruction:
+    """elementwise vector op over length elements in vmem (length often tile-sized)."""
+
     for name, value in (
         ("dst_addr", dst_addr),
         ("src0_addr", src0_addr),
@@ -286,8 +316,10 @@ def reduce_op(
     length: int,
     op: ReduceOp | int,
     target: int = 0x10,
-    columns: int = 0,
+    columns: int = 0,  # matrix width when reducing rows/cols
 ) -> Instruction:
+    """reduce over a vmem buffer; imm2 holds column count for row/col reductions."""
+
     for name, value in (
         ("dst_addr", dst_addr),
         ("src_addr", src_addr),
@@ -309,6 +341,8 @@ def reduce_op(
 
 
 def halt() -> Instruction:
+    """stop fetching / executing (program end)."""
+
     return Instruction(opcode=Opcode.HALT.value)
 
 

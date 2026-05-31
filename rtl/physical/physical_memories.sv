@@ -1,9 +1,133 @@
 /* verilator lint_off DECLFILENAME */
 // Module set: physical memory shells
-// Purpose: Physical-design-safe replacements for behavioral arrays.
-// Notes: These modules preserve request/response timing and address checks, but
-//        intentionally do not model storage contents. They are a staging point
-//        for replacing the shells with real SRAM macros and LEF/liberty views.
+// Purpose: Physical-design-safe SRAM macro adapters for on-chip memories.
+// Notes: The physical path uses real SRAM macro instances when
+//        VTPU_PHYSICAL_SRAM_MACROS is defined. RTL simulation keeps a
+//        deterministic behavioral model with the same one-cycle response.
+
+`ifdef VTPU_PHYSICAL_SRAM_MACROS
+/* verilator lint_off UNDRIVEN */
+(* blackbox *)
+module sky130_sram_1rw1r_80x64_8(
+  input  clk0,
+  input  csb0,
+  input  web0,
+  input  [9:0] wmask0,
+  input  [5:0] addr0,
+  input  [79:0] din0,
+  output [79:0] dout0,
+  input  clk1,
+  input  csb1,
+  input  [5:0] addr1,
+  output [79:0] dout1
+);
+endmodule
+/* verilator lint_on UNDRIVEN */
+`endif
+
+module vtpu_sram_1rw_32x64 (
+  input  logic clk,
+  input  logic en,
+  input  logic write,
+  input  logic [5:0] addr,
+  input  logic [31:0] wdata,
+  input  logic [3:0] wstrb,
+  output logic [31:0] rdata
+);
+`ifdef VTPU_PHYSICAL_SRAM_MACROS
+  logic [79:0] macro_dout0;
+  logic [79:0] macro_dout1;
+
+  sky130_sram_1rw1r_80x64_8 u_macro (
+    .clk0(clk),
+    .csb0(!en),
+    .web0(!write),
+    .wmask0({6'b0, wstrb}),
+    .addr0(addr),
+    .din0({48'd0, wdata}),
+    .dout0(macro_dout0),
+    .clk1(clk),
+    .csb1(1'b1),
+    .addr1(6'd0),
+    .dout1(macro_dout1)
+  );
+
+  assign rdata = macro_dout0[31:0];
+`else
+  logic [31:0] mem [0:63];
+  logic [31:0] rdata_q;
+
+  assign rdata = rdata_q;
+
+  always_ff @(posedge clk) begin
+    rdata_q <= 32'd0;
+    if (en) begin
+      if (write) begin
+        if (wstrb[0]) mem[addr][7:0] <= wdata[7:0];
+        if (wstrb[1]) mem[addr][15:8] <= wdata[15:8];
+        if (wstrb[2]) mem[addr][23:16] <= wdata[23:16];
+        if (wstrb[3]) mem[addr][31:24] <= wdata[31:24];
+      end else begin
+        rdata_q <= mem[addr];
+      end
+    end
+  end
+`endif
+endmodule
+
+module vtpu_sram_1rw_64x64 (
+  input  logic clk,
+  input  logic en,
+  input  logic write,
+  input  logic [5:0] addr,
+  input  logic [63:0] wdata,
+  input  logic [7:0] wstrb,
+  output logic [63:0] rdata
+);
+`ifdef VTPU_PHYSICAL_SRAM_MACROS
+  logic [79:0] macro_dout0;
+  logic [79:0] macro_dout1;
+
+  sky130_sram_1rw1r_80x64_8 u_macro (
+    .clk0(clk),
+    .csb0(!en),
+    .web0(!write),
+    .wmask0({2'b0, wstrb}),
+    .addr0(addr),
+    .din0({16'd0, wdata}),
+    .dout0(macro_dout0),
+    .clk1(clk),
+    .csb1(1'b1),
+    .addr1(6'd0),
+    .dout1(macro_dout1)
+  );
+
+  assign rdata = macro_dout0[63:0];
+`else
+  logic [63:0] mem [0:63];
+  logic [63:0] rdata_q;
+
+  assign rdata = rdata_q;
+
+  always_ff @(posedge clk) begin
+    rdata_q <= 64'd0;
+    if (en) begin
+      if (write) begin
+        if (wstrb[0]) mem[addr][7:0] <= wdata[7:0];
+        if (wstrb[1]) mem[addr][15:8] <= wdata[15:8];
+        if (wstrb[2]) mem[addr][23:16] <= wdata[23:16];
+        if (wstrb[3]) mem[addr][31:24] <= wdata[31:24];
+        if (wstrb[4]) mem[addr][39:32] <= wdata[39:32];
+        if (wstrb[5]) mem[addr][47:40] <= wdata[47:40];
+        if (wstrb[6]) mem[addr][55:48] <= wdata[55:48];
+        if (wstrb[7]) mem[addr][63:56] <= wdata[63:56];
+      end else begin
+        rdata_q <= mem[addr];
+      end
+    end
+  end
+`endif
+endmodule
 
 module instr_mem_physical #(
   parameter int DEPTH = 1024
@@ -22,15 +146,84 @@ module instr_mem_physical #(
   output logic [127:0] instr,
   output logic fetch_error
 );
-  always_comb begin
-    host_rdata = 32'd0;
-    instr = 128'd0;
-    fetch_error = 1'b0;
-  end
+  localparam int ADDR_W = (DEPTH <= 1) ? 1 : $clog2(DEPTH);
+
+  logic lower_en;
+  logic upper_en;
+  logic lower_write;
+  logic upper_write;
+  logic [5:0] lower_addr;
+  logic [5:0] upper_addr;
+  logic [63:0] lower_wdata;
+  logic [63:0] upper_wdata;
+  logic [7:0] lower_wstrb;
+  logic [7:0] upper_wstrb;
+  logic [63:0] lower_rdata;
+  logic [63:0] upper_rdata;
+  logic [31:0] host_rdata_q;
+  logic [5:0] host_addr6;
+  logic [5:0] fetch_addr6;
+  logic [31:0] fetch_pc_u;
+`ifndef VTPU_PHYSICAL_SRAM_MACROS
+  logic [31:0] lower_shadow [0:127];
+  logic [31:0] upper_shadow [0:127];
+`endif
+
+  assign host_addr6 = 6'(host_addr);
+  assign fetch_addr6 = 6'(fetch_pc);
+  assign fetch_pc_u = 32'(fetch_pc);
+  assign lower_en = host_we ? (host_lane[1] == 1'b0) : fetch_en;
+  assign upper_en = host_we ? (host_lane[1] == 1'b1) : fetch_en;
+  assign lower_write = host_we && (host_lane[1] == 1'b0);
+  assign upper_write = host_we && (host_lane[1] == 1'b1);
+  assign lower_addr = host_we ? host_addr6 : fetch_addr6;
+  assign upper_addr = host_we ? host_addr6 : fetch_addr6;
+  assign lower_wdata = host_lane[0] ? {host_wdata, 32'd0} : {32'd0, host_wdata};
+  assign upper_wdata = host_lane[0] ? {host_wdata, 32'd0} : {32'd0, host_wdata};
+  assign lower_wstrb = host_lane[0] ? 8'hF0 : 8'h0F;
+  assign upper_wstrb = host_lane[0] ? 8'hF0 : 8'h0F;
+  assign host_rdata = host_rdata_q;
+  assign instr = {upper_rdata, lower_rdata};
+  assign fetch_error = fetch_en && ((fetch_pc_u >= DEPTH) || (fetch_pc_u >= 32'd64));
+
+  vtpu_sram_1rw_64x64 u_instr_lower (
+    .clk(clk),
+    .en(lower_en),
+    .write(lower_write),
+    .addr(lower_addr),
+    .wdata(lower_wdata),
+    .wstrb(lower_wstrb),
+    .rdata(lower_rdata)
+  );
+
+  vtpu_sram_1rw_64x64 u_instr_upper (
+    .clk(clk),
+    .en(upper_en),
+    .write(upper_write),
+    .addr(upper_addr),
+    .wdata(upper_wdata),
+    .wstrb(upper_wstrb),
+    .rdata(upper_rdata)
+  );
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
+      host_rdata_q <= 32'd0;
     end else begin
+`ifndef VTPU_PHYSICAL_SRAM_MACROS
+      if (host_we) begin
+        if (host_lane[1]) begin
+          upper_shadow[{host_addr6, host_lane[0]}] <= host_wdata;
+        end else begin
+          lower_shadow[{host_addr6, host_lane[0]}] <= host_wdata;
+        end
+      end
+
+      host_rdata_q <= host_lane[1] ? upper_shadow[{host_addr6, host_lane[0]}] :
+                                    lower_shadow[{host_addr6, host_lane[0]}];
+`else
+      host_rdata_q <= 32'd0;
+`endif
     end
   end
 endmodule
@@ -134,6 +327,7 @@ module cmem_top_physical #(
   localparam int WORD_BYTES = DATA_W / 8;
   localparam int WORDS = CMEM_BYTES / WORD_BYTES;
   localparam int BANK_W = (BANKS <= 1) ? 1 : $clog2(BANKS);
+  localparam int BANK_WORDS = (WORDS + BANKS - 1) / BANKS;
 
   vtpu_pkg::vmem_resp_t resp_dma_q;
   vtpu_pkg::vmem_resp_t resp_tc0_q;
@@ -151,6 +345,17 @@ module cmem_top_physical #(
   logic [BANK_W-1:0] bank_dma;
   logic [BANK_W-1:0] bank_tc0;
   logic [BANK_W-1:0] bank_tc1;
+  logic [BANKS-1:0] bank_en;
+  logic [BANKS-1:0] bank_write;
+  logic [5:0] bank_addr [BANKS];
+  logic [31:0] bank_wdata [BANKS];
+  logic [3:0] bank_wstrb [BANKS];
+  logic [31:0] bank_rdata [BANKS];
+  logic [1:0] pending_port_q [BANKS];
+  logic pending_valid_q [BANKS];
+  logic pending_error_q [BANKS];
+  integer comb_idx;
+  integer seq_idx;
 
   assign resp_dma = resp_dma_s;
   assign resp_tc0 = resp_tc0_s;
@@ -164,14 +369,19 @@ module cmem_top_physical #(
     end
   endfunction
 
-  function automatic vtpu_pkg::vmem_resp_t service_resp(input vtpu_pkg::vmem_req_t port_req);
+  function automatic logic req_error(input vtpu_pkg::vmem_req_t port_req);
     int unsigned word_addr;
     begin
       word_addr = port_req.addr / WORD_BYTES;
-      service_resp = '{ready: 1'b1, valid: 1'b1, rdata: 32'd0, error: 1'b0};
-      if ((port_req.addr[1:0] != 2'b00) || (word_addr >= WORDS)) begin
-        service_resp.error = 1'b1;
-      end
+      req_error = (port_req.addr[1:0] != 2'b00) || (word_addr >= WORDS);
+    end
+  endfunction
+
+  function automatic logic [5:0] macro_addr(input vtpu_pkg::vmem_req_t port_req);
+    logic [31:0] word_addr;
+    begin
+      word_addr = port_req.addr / WORD_BYTES;
+      macro_addr = 6'((word_addr / BANKS) % 64);
     end
   endfunction
 
@@ -196,6 +406,36 @@ module cmem_top_physical #(
       {31'd0, (valid_tc1 && !ready_tc1)} +
       {31'd0, (valid_dma && !ready_dma)};
 
+    for (comb_idx = 0; comb_idx < BANKS; comb_idx++) begin
+      bank_en[comb_idx] = 1'b0;
+      bank_write[comb_idx] = 1'b0;
+      bank_addr[comb_idx] = 6'd0;
+      bank_wdata[comb_idx] = 32'd0;
+      bank_wstrb[comb_idx] = 4'h0;
+    end
+
+    if (valid_tc0 && ready_tc0 && !req_error(req_tc0)) begin
+      bank_en[bank_tc0] = 1'b1;
+      bank_write[bank_tc0] = req_tc0.write;
+      bank_addr[bank_tc0] = macro_addr(req_tc0);
+      bank_wdata[bank_tc0] = req_tc0.wdata;
+      bank_wstrb[bank_tc0] = req_tc0.wstrb;
+    end
+    if (valid_tc1 && ready_tc1 && !req_error(req_tc1)) begin
+      bank_en[bank_tc1] = 1'b1;
+      bank_write[bank_tc1] = req_tc1.write;
+      bank_addr[bank_tc1] = macro_addr(req_tc1);
+      bank_wdata[bank_tc1] = req_tc1.wdata;
+      bank_wstrb[bank_tc1] = req_tc1.wstrb;
+    end
+    if (valid_dma && ready_dma && !req_error(req_dma)) begin
+      bank_en[bank_dma] = 1'b1;
+      bank_write[bank_dma] = req_dma.write;
+      bank_addr[bank_dma] = macro_addr(req_dma);
+      bank_wdata[bank_dma] = req_dma.wdata;
+      bank_wstrb[bank_dma] = req_dma.wstrb;
+    end
+
     resp_dma_s = resp_dma_q;
     resp_tc0_s = resp_tc0_q;
     resp_tc1_s = resp_tc1_q;
@@ -204,19 +444,65 @@ module cmem_top_physical #(
     resp_tc1_s.ready = !valid_tc1 || ready_tc1;
   end
 
+  genvar cmem_bank_g;
+  generate
+    for (cmem_bank_g = 0; cmem_bank_g < BANKS; cmem_bank_g++) begin : gen_cmem_banks
+      vtpu_sram_1rw_32x64 u_bank (
+        .clk(clk),
+        .en(bank_en[cmem_bank_g]),
+        .write(bank_write[cmem_bank_g]),
+        .addr(bank_addr[cmem_bank_g]),
+        .wdata(bank_wdata[cmem_bank_g]),
+        .wstrb(bank_wstrb[cmem_bank_g]),
+        .rdata(bank_rdata[cmem_bank_g])
+      );
+    end
+  endgenerate
+
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       resp_dma_q <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
       resp_tc0_q <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
       resp_tc1_q <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
+      for (seq_idx = 0; seq_idx < BANKS; seq_idx++) begin
+        pending_port_q[seq_idx] <= 2'd0;
+        pending_valid_q[seq_idx] <= 1'b0;
+        pending_error_q[seq_idx] <= 1'b0;
+      end
     end else begin
       resp_dma_q <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
       resp_tc0_q <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
       resp_tc1_q <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
 
-      if (valid_tc0 && ready_tc0) resp_tc0_q <= service_resp(req_tc0);
-      if (valid_tc1 && ready_tc1) resp_tc1_q <= service_resp(req_tc1);
-      if (valid_dma && ready_dma) resp_dma_q <= service_resp(req_dma);
+      for (seq_idx = 0; seq_idx < BANKS; seq_idx++) begin
+        if (pending_valid_q[seq_idx]) begin
+          unique case (pending_port_q[seq_idx])
+            2'd0: resp_tc0_q <= '{ready: 1'b1, valid: 1'b1, rdata: bank_rdata[seq_idx], error: pending_error_q[seq_idx]};
+            2'd1: resp_tc1_q <= '{ready: 1'b1, valid: 1'b1, rdata: bank_rdata[seq_idx], error: pending_error_q[seq_idx]};
+            2'd2: resp_dma_q <= '{ready: 1'b1, valid: 1'b1, rdata: bank_rdata[seq_idx], error: pending_error_q[seq_idx]};
+            default: begin
+            end
+          endcase
+        end
+        pending_valid_q[seq_idx] <= 1'b0;
+        pending_error_q[seq_idx] <= 1'b0;
+      end
+
+      if (valid_tc0 && ready_tc0) begin
+        pending_port_q[bank_tc0] <= 2'd0;
+        pending_valid_q[bank_tc0] <= 1'b1;
+        pending_error_q[bank_tc0] <= req_error(req_tc0);
+      end
+      if (valid_tc1 && ready_tc1) begin
+        pending_port_q[bank_tc1] <= 2'd1;
+        pending_valid_q[bank_tc1] <= 1'b1;
+        pending_error_q[bank_tc1] <= req_error(req_tc1);
+      end
+      if (valid_dma && ready_dma) begin
+        pending_port_q[bank_dma] <= 2'd2;
+        pending_valid_q[bank_dma] <= 1'b1;
+        pending_error_q[bank_dma] <= req_error(req_dma);
+      end
     end
   end
 endmodule
@@ -272,6 +558,15 @@ module vmem_top_physical #(
   logic [BANK_W-1:0] bank_reduce;
   logic [31:0] accepted_mxu_count;
   logic [31:0] conflict_mxu_count;
+  logic [BANKS-1:0] bank_en;
+  logic [BANKS-1:0] bank_write;
+  logic [5:0] bank_addr [BANKS];
+  logic [31:0] bank_wdata [BANKS];
+  logic [3:0] bank_wstrb [BANKS];
+  logic [31:0] bank_rdata [BANKS];
+  logic [3:0] pending_port_q [BANKS];
+  logic pending_valid_q [BANKS];
+  logic pending_error_q [BANKS];
   integer comb_idx;
   integer higher_idx;
   integer seq_idx;
@@ -295,14 +590,19 @@ module vmem_top_physical #(
     end
   endfunction
 
-  function automatic vtpu_pkg::vmem_resp_t service_resp(input vtpu_pkg::vmem_req_t port_req);
+  function automatic logic req_error(input vtpu_pkg::vmem_req_t port_req);
     int unsigned word_addr;
     begin
       word_addr = port_req.addr / WORD_BYTES;
-      service_resp = '{ready: 1'b1, valid: 1'b1, rdata: 32'd0, error: 1'b0};
-      if ((port_req.addr[1:0] != 2'b00) || (word_addr >= WORDS)) begin
-        service_resp.error = 1'b1;
-      end
+      req_error = (port_req.addr[1:0] != 2'b00) || (word_addr >= WORDS);
+    end
+  endfunction
+
+  function automatic logic [5:0] macro_addr(input vtpu_pkg::vmem_req_t port_req);
+    logic [31:0] word_addr;
+    begin
+      word_addr = port_req.addr / WORD_BYTES;
+      macro_addr = 6'((word_addr / BANKS) % 64);
     end
   endfunction
 
@@ -365,6 +665,45 @@ module vmem_top_physical #(
       {31'd0, (valid_reduce && !ready_reduce)} +
       {31'd0, (valid_dma && !ready_dma)};
 
+    for (comb_idx = 0; comb_idx < BANKS; comb_idx++) begin
+      bank_en[comb_idx] = 1'b0;
+      bank_write[comb_idx] = 1'b0;
+      bank_addr[comb_idx] = 6'd0;
+      bank_wdata[comb_idx] = 32'd0;
+      bank_wstrb[comb_idx] = 4'h0;
+    end
+
+    for (comb_idx = 0; comb_idx < MXU_PORTS; comb_idx++) begin
+      if (valid_mxu[comb_idx] && ready_mxu[comb_idx] && !req_error(req_mxu[comb_idx])) begin
+        bank_en[bank_mxu[comb_idx]] = 1'b1;
+        bank_write[bank_mxu[comb_idx]] = req_mxu[comb_idx].write;
+        bank_addr[bank_mxu[comb_idx]] = macro_addr(req_mxu[comb_idx]);
+        bank_wdata[bank_mxu[comb_idx]] = req_mxu[comb_idx].wdata;
+        bank_wstrb[bank_mxu[comb_idx]] = req_mxu[comb_idx].wstrb;
+      end
+    end
+    if (valid_vector && ready_vector && !req_error(req_vector)) begin
+      bank_en[bank_vector] = 1'b1;
+      bank_write[bank_vector] = req_vector.write;
+      bank_addr[bank_vector] = macro_addr(req_vector);
+      bank_wdata[bank_vector] = req_vector.wdata;
+      bank_wstrb[bank_vector] = req_vector.wstrb;
+    end
+    if (valid_reduce && ready_reduce && !req_error(req_reduce)) begin
+      bank_en[bank_reduce] = 1'b1;
+      bank_write[bank_reduce] = req_reduce.write;
+      bank_addr[bank_reduce] = macro_addr(req_reduce);
+      bank_wdata[bank_reduce] = req_reduce.wdata;
+      bank_wstrb[bank_reduce] = req_reduce.wstrb;
+    end
+    if (valid_dma && ready_dma && !req_error(req_dma)) begin
+      bank_en[bank_dma] = 1'b1;
+      bank_write[bank_dma] = req_dma.write;
+      bank_addr[bank_dma] = macro_addr(req_dma);
+      bank_wdata[bank_dma] = req_dma.wdata;
+      bank_wstrb[bank_dma] = req_dma.wstrb;
+    end
+
     resp_dma_s = resp_dma_q;
     resp_vector_s = resp_vector_q;
     resp_reduce_s = resp_reduce_q;
@@ -377,6 +716,21 @@ module vmem_top_physical #(
     end
   end
 
+  genvar vmem_bank_g;
+  generate
+    for (vmem_bank_g = 0; vmem_bank_g < BANKS; vmem_bank_g++) begin : gen_vmem_banks
+      vtpu_sram_1rw_32x64 u_bank (
+        .clk(clk),
+        .en(bank_en[vmem_bank_g]),
+        .write(bank_write[vmem_bank_g]),
+        .addr(bank_addr[vmem_bank_g]),
+        .wdata(bank_wdata[vmem_bank_g]),
+        .wstrb(bank_wstrb[vmem_bank_g]),
+        .rdata(bank_rdata[vmem_bank_g])
+      );
+    end
+  endgenerate
+
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       resp_dma_q <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
@@ -384,6 +738,11 @@ module vmem_top_physical #(
       resp_reduce_q <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
       for (seq_idx = 0; seq_idx < MXU_PORTS; seq_idx++) begin
         resp_mxu_q[seq_idx] <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
+      end
+      for (seq_idx = 0; seq_idx < BANKS; seq_idx++) begin
+        pending_port_q[seq_idx] <= 4'd0;
+        pending_valid_q[seq_idx] <= 1'b0;
+        pending_error_q[seq_idx] <= 1'b0;
       end
     end else begin
       resp_dma_q <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
@@ -393,14 +752,44 @@ module vmem_top_physical #(
         resp_mxu_q[seq_idx] <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
       end
 
+      for (seq_idx = 0; seq_idx < BANKS; seq_idx++) begin
+        if (pending_valid_q[seq_idx]) begin
+          if (pending_port_q[seq_idx] < MXU_PORTS[3:0]) begin
+            resp_mxu_q[pending_port_q[seq_idx][1:0]] <= '{ready: 1'b1, valid: 1'b1, rdata: bank_rdata[seq_idx], error: pending_error_q[seq_idx]};
+          end else if (pending_port_q[seq_idx] == 4'd8) begin
+            resp_vector_q <= '{ready: 1'b1, valid: 1'b1, rdata: bank_rdata[seq_idx], error: pending_error_q[seq_idx]};
+          end else if (pending_port_q[seq_idx] == 4'd9) begin
+            resp_reduce_q <= '{ready: 1'b1, valid: 1'b1, rdata: bank_rdata[seq_idx], error: pending_error_q[seq_idx]};
+          end else if (pending_port_q[seq_idx] == 4'd10) begin
+            resp_dma_q <= '{ready: 1'b1, valid: 1'b1, rdata: bank_rdata[seq_idx], error: pending_error_q[seq_idx]};
+          end
+        end
+        pending_valid_q[seq_idx] <= 1'b0;
+        pending_error_q[seq_idx] <= 1'b0;
+      end
+
       for (seq_idx = 0; seq_idx < MXU_PORTS; seq_idx++) begin
         if (valid_mxu[seq_idx] && ready_mxu[seq_idx]) begin
-          resp_mxu_q[seq_idx] <= service_resp(req_mxu[seq_idx]);
+          pending_port_q[bank_mxu[seq_idx]] <= 4'(seq_idx);
+          pending_valid_q[bank_mxu[seq_idx]] <= 1'b1;
+          pending_error_q[bank_mxu[seq_idx]] <= req_error(req_mxu[seq_idx]);
         end
       end
-      if (valid_vector && ready_vector) resp_vector_q <= service_resp(req_vector);
-      if (valid_reduce && ready_reduce) resp_reduce_q <= service_resp(req_reduce);
-      if (valid_dma && ready_dma) resp_dma_q <= service_resp(req_dma);
+      if (valid_vector && ready_vector) begin
+        pending_port_q[bank_vector] <= 4'd8;
+        pending_valid_q[bank_vector] <= 1'b1;
+        pending_error_q[bank_vector] <= req_error(req_vector);
+      end
+      if (valid_reduce && ready_reduce) begin
+        pending_port_q[bank_reduce] <= 4'd9;
+        pending_valid_q[bank_reduce] <= 1'b1;
+        pending_error_q[bank_reduce] <= req_error(req_reduce);
+      end
+      if (valid_dma && ready_dma) begin
+        pending_port_q[bank_dma] <= 4'd10;
+        pending_valid_q[bank_dma] <= 1'b1;
+        pending_error_q[bank_dma] <= req_error(req_dma);
+      end
     end
   end
 endmodule
