@@ -1,3 +1,4 @@
+# 3d mesh and torus topologies with dimension-order routing
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -11,10 +12,12 @@ Coord = tuple[int, int, int]
 
 @dataclass
 class Topology3D:
-    dims: Coord
+    """regular 3d grid of nodes connected along x/y/z axes."""
+
+    dims: Coord  # (x, y, z) node counts
     bandwidth_bytes_per_cycle: float = 32.0
     latency_cycles: int = 10
-    wrap: bool = False
+    wrap: bool = False  # torus wraps edges; mesh does not
 
     def __post_init__(self) -> None:
         if any(d <= 0 for d in self.dims):
@@ -36,6 +39,7 @@ class Topology3D:
                     yield (x, y, z)
 
     def neighbors(self, coord: Coord) -> list[Coord]:
+        """±1 step along each axis; torus wraps, mesh clips at boundaries."""
         result: list[Coord] = []
         for axis in range(3):
             for delta in (-1, 1):
@@ -51,6 +55,8 @@ class Topology3D:
         return result
 
     def dimension_order_path(self, source: Coord, dest: Coord) -> list[Coord]:
+        """route x first, then y, then z (minimal hops on mesh/torus)."""
+
         if source == dest:
             return [source]
         current = list(source)
@@ -68,6 +74,8 @@ class Topology3D:
         return path
 
     def send(self, source: Coord, dest: Coord, num_bytes: int, earliest_cycle: float = 0.0) -> float:
+        """transfer num_bytes along the dimension-order path; return completion cycle."""
+
         path = self.dimension_order_path(source, dest)
         cycle = earliest_cycle
         for hop_source, hop_dest in zip(path, path[1:]):
@@ -79,10 +87,14 @@ class Topology3D:
 
 
 class Mesh3D(Topology3D):
+    """3d mesh: no wrap-around links at chip boundaries."""
+
     def __init__(self, dims: Coord, bandwidth_bytes_per_cycle: float = 32.0, latency_cycles: int = 10):
         super().__init__(dims=dims, bandwidth_bytes_per_cycle=bandwidth_bytes_per_cycle, latency_cycles=latency_cycles, wrap=False)
 
 
 class Torus3D(Topology3D):
+    """3d torus: edges wrap so every node has six neighbors."""
+
     def __init__(self, dims: Coord, bandwidth_bytes_per_cycle: float = 32.0, latency_cycles: int = 10):
         super().__init__(dims=dims, bandwidth_bytes_per_cycle=bandwidth_bytes_per_cycle, latency_cycles=latency_cycles, wrap=True)

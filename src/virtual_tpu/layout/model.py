@@ -1,3 +1,4 @@
+# floorplan geometry and the default tiny vtpu block placement
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
@@ -6,6 +7,8 @@ from typing import Iterable
 
 @dataclass(frozen=True)
 class Rect:
+    """axis-aligned rectangle in micron-like integer coordinates."""
+
     x: int
     y: int
     w: int
@@ -37,6 +40,7 @@ class Rect:
         return replace(self, x=self.x + dx, y=self.y + dy)
 
     def clamped(self, boundary: Rect, grid: int) -> Rect:
+        """snap position to grid and keep the rect inside boundary."""
         max_x = max(boundary.x, boundary.right - self.w)
         max_y = max(boundary.y, boundary.top - self.h)
         return replace(
@@ -48,14 +52,18 @@ class Rect:
 
 @dataclass(frozen=True)
 class Block:
+    """named macro or logic region on the floorplan."""
+
     name: str
-    kind: str
+    kind: str  # "logic", "sram", "compute", "io", ...
     rect: Rect
-    fixed: bool = False
+    fixed: bool = False  # fixed blocks (e.g. hbm pad ring) don't move during search
 
 
 @dataclass(frozen=True)
 class Net:
+    """weighted connectivity between block pins (used for wirelength cost)."""
+
     name: str
     pins: tuple[str, ...]
     weight: float = 1.0
@@ -63,6 +71,8 @@ class Net:
 
 @dataclass(frozen=True)
 class DesignPoint:
+    """rtl / pd parameters that feed timing and area proxies."""
+
     name: str = "vtpu_pd_tiny"
     num_tensor_cores: int = 2
     mxus_per_tc: int = 4
@@ -78,12 +88,14 @@ class DesignPoint:
 
 @dataclass(frozen=True)
 class Floorplan:
+    """complete die/core outline, placed blocks, and connectivity nets."""
+
     design: DesignPoint
     die: Rect
     core: Rect
     blocks: tuple[Block, ...]
     nets: tuple[Net, ...]
-    grid: int = 10
+    grid: int = 10  # placement snap grid in same units as rects
 
     def block(self, name: str) -> Block:
         for block in self.blocks:
@@ -123,6 +135,8 @@ class Floorplan:
 
 
 def tiny_floorplan(design: DesignPoint | None = None) -> Floorplan:
+    """default 2-tc floorplan with control, dma, cmem, hbm_if, and tc compute/vmem blocks."""
+
     design = design or DesignPoint()
     die = Rect(0, 0, 2200, 2200)
     core = Rect(100, 100, 2000, 2000)
@@ -131,7 +145,7 @@ def tiny_floorplan(design: DesignPoint | None = None) -> Floorplan:
         Block("dma", "logic", Rect(930, 1260, 340, 260)),
         Block("cmem", "sram", Rect(880, 850, 440, 300)),
         Block("instr_mem", "sram", Rect(150, 1680, 360, 260)),
-        Block("hbm_if", "io", Rect(1680, 850, 360, 420), fixed=True),
+        Block("hbm_if", "io", Rect(1680, 850, 360, 420), fixed=True),  # pad ring / bump side
         Block("tc0_compute", "compute", Rect(360, 410, 360, 360)),
         Block("tc0_vmem", "sram", Rect(270, 850, 520, 300)),
         Block("tc1_compute", "compute", Rect(1440, 410, 360, 360)),
@@ -143,7 +157,7 @@ def tiny_floorplan(design: DesignPoint | None = None) -> Floorplan:
         Net("dma_cmem", ("dma", "cmem"), 1.5),
         Net("cmem_tc0", ("cmem", "tc0_vmem"), 2.0),
         Net("cmem_tc1", ("cmem", "tc1_vmem"), 2.0),
-        Net("tc0_local", ("tc0_vmem", "tc0_compute"), 4.0),
+        Net("tc0_local", ("tc0_vmem", "tc0_compute"), 4.0),  # high weight: keep vmem near mxu
         Net("tc1_local", ("tc1_vmem", "tc1_compute"), 4.0),
         Net("control_tc", ("control", "tc0_compute", "tc1_compute"), 1.0),
     )
@@ -151,6 +165,8 @@ def tiny_floorplan(design: DesignPoint | None = None) -> Floorplan:
 
 
 def half_perimeter_wirelength(blocks: Iterable[Block]) -> float:
+    """hpwl bounding-box wirelength for a set of block centers."""
+
     centers = [block.rect.center for block in blocks]
     if len(centers) <= 1:
         return 0.0

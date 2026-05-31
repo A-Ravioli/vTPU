@@ -1,8 +1,9 @@
+# text assembler: mnemonics + SPACE:ADDR operands -> Instruction list
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from virtual_tpu.isa import (
+from virtual_tpu.isa import (  # instruction builders and encoding constants
     AddressSpace,
     ISAError,
     MATMUL_FLAG_ACCUMULATE,
@@ -26,6 +27,7 @@ class AssemblerError(ValueError):
     """Raised when assembly source cannot be converted to instructions."""
 
 
+# human-readable barrier unit names -> UnitMask bits
 _BARRIER_NAMES = {
     "DMA": UnitMask.DMA,
     "MXU": UnitMask.MXU,
@@ -43,12 +45,15 @@ _REDUCE_NAMES = {op.name: op for op in ReduceOp}
 
 
 def assemble(source: str | Sequence[str], symbols: Mapping[str, int] | None = None) -> list[InstructionLike]:
+    """parse assembly text into a list of encoded instructions."""
+
     lines = source.splitlines() if isinstance(source, str) else list(source)
     instructions: list[InstructionLike] = []
     symbol_table = _collect_symbols(lines, dict(symbols or {}))
 
     for line_no, raw_line in enumerate(lines, start=1):
         line = _strip_label(raw_line.split("#", 1)[0].strip())
+        # skip blank lines and symbol definitions (FOO = 0x100)
         if not line or "=" in line and line.split("=", 1)[0].strip().isidentifier() and line.split("=", 1)[0].strip().isupper():
             continue
         try:
@@ -64,6 +69,8 @@ def emit_hex(program: Sequence[InstructionLike]) -> str:
 
 
 def debug_listing(program: Sequence[InstructionLike], asm_lines: Sequence[str] | None = None) -> str:
+    """pc, hex encoding, and optional source line for each instruction."""
+
     rows = []
     for pc, instr in enumerate(program):
         asm = "" if asm_lines is None or pc >= len(asm_lines) else asm_lines[pc].strip()
@@ -122,7 +129,7 @@ def _assemble_line(line: str, symbols: Mapping[str, int]) -> "InstructionLike":
         dst = _parse_mem_ref(_require_operand(operands, "dst"), symbols)
         src0 = _parse_mem_ref(_require_operand(operands, "src0"), symbols)
         src1_text = operands.get("src1")
-        src1_addr = 0
+        src1_addr = 0  # unused for unary ops like vrelu
         if src1_text is not None:
             src1_addr = _parse_mem_ref(src1_text, symbols).addr
         op = _parse_vector_op(_require_operand(operands, "op"))
@@ -175,6 +182,8 @@ def _parse_operands(parts: Sequence[str]) -> dict[str, str]:
 
 
 def _collect_symbols(lines: Sequence[str], symbols: dict[str, int]) -> dict[str, int]:
+    """first pass: collect FOO = addr constants and label: pc mappings."""
+
     pc = 0
     for raw_line in lines:
         line = raw_line.split("#", 1)[0].strip()
@@ -223,6 +232,8 @@ def _parse_mem_ref(text: str, symbols: Mapping[str, int]) -> MemoryRef:
 
 
 def _parse_target(text: str) -> int:
+    """parse TC0.MXU0 style targets into the 8-bit target byte (high nibble = tc, low = mxu)."""
+
     upper = text.upper()
     if upper.startswith("0X") or upper.isdigit():
         return int(upper, 0)
@@ -235,7 +246,7 @@ def _parse_target(text: str) -> int:
     tc_mask = 1 << tc_id
     unit = pieces[1]
     if unit == "ALL":
-        mxu_selector = 0xF
+        mxu_selector = 0xF  # broadcast to all mxus on this tc
     elif unit.startswith("MXU"):
         mxu_selector = int(unit[3:])
         if mxu_selector < 0 or mxu_selector > 3:

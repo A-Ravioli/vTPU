@@ -1,3 +1,4 @@
+# floorplan cost function: wirelength, congestion, memory distance, timing proxy
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -8,17 +9,21 @@ from virtual_tpu.layout.model import Floorplan, half_perimeter_wirelength
 
 @dataclass(frozen=True)
 class CostWeights:
+    """scalar weights for each term in the layout objective."""
+
     wirelength: float = 1.0
     congestion: float = 650.0
     memory_distance: float = 4.0
     area: float = 0.0001
     timing: float = 120.0
-    illegal: float = 1_000_000.0
-    counters: float = 0.05
+    illegal: float = 1_000_000.0  # huge penalty for overlaps / out-of-bounds
+    counters: float = 0.05  # tie-in to golden-model perf counters when provided
 
 
 @dataclass(frozen=True)
 class LayoutScore:
+    """breakdown of the weighted floorplan objective."""
+
     total: float
     wirelength: float
     congestion: float
@@ -38,6 +43,8 @@ def score_floorplan(
     counters: PerformanceCounters | None = None,
     weights: CostWeights | None = None,
 ) -> LayoutScore:
+    """compute a single scalar cost (lower is better) for a candidate floorplan."""
+
     weights = weights or CostWeights()
     wirelength = _weighted_wirelength(floorplan)
     congestion = _congestion_proxy(floorplan)
@@ -77,6 +84,8 @@ def _weighted_wirelength(floorplan: Floorplan) -> float:
 
 
 def _congestion_proxy(floorplan: Floorplan) -> float:
+    """quadratic penalty once core utilization exceeds ~35%."""
+
     core_area = floorplan.core.area
     if core_area == 0:
         return 1.0
@@ -86,6 +95,8 @@ def _congestion_proxy(floorplan: Floorplan) -> float:
 
 
 def _memory_distance(floorplan: Floorplan) -> float:
+    """manhattan distance for critical memory/compute and hbm/dma pairs."""
+
     pairs = (
         ("tc0_vmem", "tc0_compute"),
         ("tc1_vmem", "tc1_compute"),
@@ -102,6 +113,8 @@ def _memory_distance(floorplan: Floorplan) -> float:
 
 
 def _timing_proxy(floorplan: Floorplan) -> float:
+    """normalize memory distance by clock period (rough critical-path proxy)."""
+
     period = max(floorplan.design.clock_period_ns, 1.0)
     return _memory_distance(floorplan) / (period * 1000.0)
 
@@ -114,5 +127,5 @@ def _counter_cost(counters: PerformanceCounters | None) -> float:
         + counters.vector_active_cycles
         + counters.reduce_active_cycles
         + counters.hbm_stall_cycles
-        + (8 * counters.vmem_bank_conflicts)
+        + (8 * counters.vmem_bank_conflicts)  # bank conflicts weighted higher
     )

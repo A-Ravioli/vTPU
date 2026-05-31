@@ -1,3 +1,4 @@
+# python golden model: fetch-decode-execute loop over instruction programs
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -6,7 +7,7 @@ from typing import Sequence
 
 import numpy as np
 
-from virtual_tpu.isa import (
+from virtual_tpu.isa import (  # encoding helpers and matmul flag bits
     ISAError,
     MATMUL_FLAG_ACCUMULATE,
     MATMUL_FLAG_BF16,
@@ -35,6 +36,8 @@ class HaltReason(Enum):
 
 @dataclass(frozen=True)
 class ExecutionResult:
+    """outcome of run(): whether we stopped, why, and where."""
+
     halted: bool
     reason: HaltReason
     pc: int
@@ -44,6 +47,8 @@ class ExecutionResult:
 
 @dataclass
 class PerformanceCounters:
+    """rough activity metrics for layout search and perf analysis."""
+
     instructions_retired: int = 0
     dma_bytes: int = 0
     mxu_active_cycles: int = 0
@@ -55,6 +60,8 @@ class PerformanceCounters:
 
 @dataclass
 class GoldenExecutor:
+    """interpret a program against a MemorySystem; one instruction per step()."""
+
     program: Sequence[Instruction]
     memory: MemorySystem
     pc: int = 0
@@ -67,6 +74,8 @@ class GoldenExecutor:
             self.counters = PerformanceCounters()
 
     def run(self, max_steps: int = 10_000) -> ExecutionResult:
+        """execute until halt, error, or step limit."""
+
         steps = 0
         while not self.halted and steps < max_steps:
             self.step()
@@ -111,6 +120,7 @@ class GoldenExecutor:
                 self.counters.instructions_retired += 1
                 self.pc += 1
             elif opcode in {Opcode.BARRIER, Opcode.SYNC}:
+                # mvp golden model treats barriers as no-ops (sync is assumed immediate)
                 self.counters.instructions_retired += 1
                 self.pc += 1
             elif opcode == Opcode.HALT:
@@ -132,11 +142,11 @@ class GoldenExecutor:
         self.memory.write(dst_space, instr.dst, payload)
         self.counters.dma_bytes += length
         if src_space == AddressSpace.HBM or dst_space == AddressSpace.HBM:
-            self.counters.hbm_stall_cycles += 80 + ((length + 31) // 32)
+            self.counters.hbm_stall_cycles += 80 + ((length + 31) // 32)  # rough hbm latency model
 
     def _execute_clear(self, instr: Instruction) -> None:
         try:
-            dst_space = AddressSpace(instr.flags & 0x7)
+            dst_space = AddressSpace(instr.flags & 0x7)  # low 3 bits = address space (not dma flags)
         except ValueError as exc:
             raise ExecutionError(f"invalid CLEAR address space {instr.flags & 0x7}") from exc
         self._require_aligned(instr.dst, 0, instr.imm0)
@@ -173,7 +183,7 @@ class GoldenExecutor:
     def _execute_vector_op(self, instr: Instruction) -> None:
         if instr.imm0 == 0:
             raise ExecutionError("VECTOR_OP length must be nonzero")
-        self.counters.vector_active_cycles += max(1, (instr.imm0 + 15) // 16)
+        self.counters.vector_active_cycles += max(1, (instr.imm0 + 15) // 16)  # ~16 elements per cycle
         op = VectorOp(instr.imm1)
         length = instr.imm0
         for vmem_space in self._target_vmem_spaces(instr.target):
@@ -228,6 +238,8 @@ class GoldenExecutor:
             self.memory.write_i32_vector(vmem_space, instr.dst, wrap_i32(result))
 
     def _target_vmem_spaces(self, target: int) -> list[AddressSpace]:
+        """decode target byte: high nibble = tensor core(s), low nibble = mxu selector (unused here)."""
+
         tc_mask = (target >> 4) & 0xF
         unit_mask = target & 0xF
         if unit_mask > 0xF:
@@ -254,4 +266,6 @@ class GoldenExecutor:
 
 
 def _sign_extend_16(value: int) -> int:
+    """treat imm2 as a signed 16-bit immediate for vscale / vclamp."""
+
     return value - 0x10000 if value & 0x8000 else value

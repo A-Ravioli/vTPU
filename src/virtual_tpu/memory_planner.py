@@ -1,3 +1,4 @@
+# simple bump-pointer allocator for hbm/cmem/vmem layout planning
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -5,6 +6,8 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Allocation:
+    """named region at a byte offset with fixed size."""
+
     name: str
     offset: int
     size: int
@@ -12,7 +15,9 @@ class Allocation:
 
 @dataclass
 class LinearMemoryPlanner:
-    alignment: int = 256
+    """allocate buffers sequentially with alignment padding (no reuse)."""
+
+    alignment: int = 256  # typical dma / tile alignment
     cursor: int = 0
     allocations: list[Allocation] | None = None
 
@@ -23,6 +28,8 @@ class LinearMemoryPlanner:
             self.allocations = []
 
     def allocate(self, name: str, size: int) -> Allocation:
+        """reserve size bytes at the next aligned offset; advances the cursor."""
+
         if size < 0:
             raise ValueError("size must be nonnegative")
         offset = _align_up(self.cursor, self.alignment)

@@ -1,3 +1,4 @@
+# minimal graph ir for compiler: tensors plus matmul/relu/add ops
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -10,6 +11,8 @@ MemoryName = Literal["HBM", "CMEM", "VMEM0", "VMEM1"]
 
 @dataclass(frozen=True)
 class Tensor:
+    """named buffer with shape, dtype, and preferred memory bank."""
+
     name: str
     shape: tuple[int, ...]
     dtype: DType
@@ -18,6 +21,8 @@ class Tensor:
 
 @dataclass(frozen=True)
 class MatMul:
+    """2d matrix multiply: out = lhs @ rhs."""
+
     lhs: Tensor
     rhs: Tensor
     out: Tensor
@@ -25,18 +30,24 @@ class MatMul:
 
 @dataclass(frozen=True)
 class Relu:
+    """elementwise relu: out = max(0, src)."""
+
     src: Tensor
     out: Tensor
 
 
 @dataclass(frozen=True)
 class Add:
+    """elementwise add: out = lhs + rhs."""
+
     lhs: Tensor
     rhs: Tensor
     out: Tensor
 
 
 def matmul(lhs: Tensor, rhs: Tensor, name: str = "matmul_out") -> MatMul:
+    """build a matmul node; output is int32 in the same memory as lhs."""
+
     if len(lhs.shape) != 2 or len(rhs.shape) != 2:
         raise ValueError("matmul tensors must be rank-2")
     if lhs.shape[1] != rhs.shape[0]:

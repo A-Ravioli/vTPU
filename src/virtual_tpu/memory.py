@@ -1,3 +1,4 @@
+# byte-addressable memory banks for the golden model (hbm, cmem, vmem, infeed/outfeed)
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -13,6 +14,8 @@ class MemoryError(ValueError):
 
 @dataclass
 class ByteMemory:
+    """single contiguous byte array with bounds-checked read/write/clear."""
+
     name: str
     size_bytes: int
     data: bytearray = field(init=False)
@@ -46,9 +49,11 @@ class ByteMemory:
 
 @dataclass
 class MemorySystem:
-    hbm_bytes: int = 16 * 1024 * 1024
-    cmem_bytes: int = 512 * 1024
-    vmem_bytes: int = 256 * 1024
+    """all address spaces the simulator can access; sizes match typical mvp defaults."""
+
+    hbm_bytes: int = 16 * 1024 * 1024  # bulk off-chip style storage
+    cmem_bytes: int = 512 * 1024  # chip-level staging between hbm and tensor cores
+    vmem_bytes: int = 256 * 1024  # per-tensor-core scratch
     hbm: ByteMemory = field(init=False)
     cmem: ByteMemory = field(init=False)
     vmem0: ByteMemory = field(init=False)
@@ -61,10 +66,11 @@ class MemorySystem:
         self.cmem = ByteMemory("CMEM", self.cmem_bytes)
         self.vmem0 = ByteMemory("VMEM0", self.vmem_bytes)
         self.vmem1 = ByteMemory("VMEM1", self.vmem_bytes)
-        self.infeed = ByteMemory("INFEED", 256 * 4)
+        self.infeed = ByteMemory("INFEED", 256 * 4)  # host ingress buffer (mvp placeholder)
         self.outfeed = ByteMemory("OUTFEED", 256 * 4)
 
     def memory(self, space: AddressSpace | int) -> ByteMemory:
+        """resolve an address-space enum to the backing byte array."""
         match AddressSpace(space):
             case AddressSpace.HBM:
                 return self.hbm
@@ -89,6 +95,7 @@ class MemorySystem:
         self.memory(space).clear(addr, length)
 
     def write_i8_matrix(self, space: AddressSpace | int, addr: int, matrix: np.ndarray) -> None:
+        """store a row-major int8 matrix as raw bytes (matmul operand tiles)."""
         array = np.asarray(matrix, dtype=np.int8, order="C")
         self.write(space, addr, array.tobytes(order="C"))
 
@@ -97,6 +104,7 @@ class MemorySystem:
         return np.frombuffer(payload, dtype=np.int8).reshape(rows, cols).copy()
 
     def write_i32_matrix(self, space: AddressSpace | int, addr: int, matrix: np.ndarray) -> None:
+        """store a row-major int32 matrix (matmul accumulators / vector data)."""
         array = np.asarray(matrix, dtype=np.int32, order="C")
         self.write(space, addr, array.tobytes(order="C"))
 
@@ -113,6 +121,7 @@ class MemorySystem:
         return np.frombuffer(payload, dtype=np.int32).copy()
 
     def write_u16_matrix(self, space: AddressSpace | int, addr: int, matrix: np.ndarray) -> None:
+        """store bf16 tiles as raw uint16 (hardware bit pattern)."""
         array = np.asarray(matrix, dtype=np.uint16, order="C")
         self.write(space, addr, array.tobytes(order="C"))
 
@@ -121,6 +130,7 @@ class MemorySystem:
         return np.frombuffer(payload, dtype=np.uint16).reshape(rows, cols).copy()
 
     def write_f32_matrix(self, space: AddressSpace | int, addr: int, matrix: np.ndarray) -> None:
+        """store float32 results (bf16 matmul path)."""
         array = np.asarray(matrix, dtype=np.float32, order="C")
         self.write(space, addr, array.tobytes(order="C"))
 

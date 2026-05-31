@@ -1,3 +1,4 @@
+# cli entry point: python -m virtual_tpu.layout
 from virtual_tpu.layout.search import main
 
 
