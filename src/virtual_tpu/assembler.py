@@ -6,8 +6,6 @@ from collections.abc import Mapping, Sequence
 from virtual_tpu.isa import (  # instruction builders and encoding constants
     AddressSpace,
     ISAError,
-    MATMUL_FLAG_ACCUMULATE,
-    MATMUL_FLAG_SIGNED,
     MemoryRef,
     Opcode,
     ReduceOp,
@@ -110,9 +108,8 @@ def _assemble_line(line: str, symbols: Mapping[str, int]) -> "InstructionLike":
             raise AssemblerError("MATMUL dst must be VMEM0 or VMEM1 in the MVP")
         if src0.space != dst.space or src1.space != dst.space:
             raise AssemblerError("MATMUL operands must use the same VMEM space in the MVP")
-        flags = MATMUL_FLAG_SIGNED
-        if _parse_bool(operands.get("accumulate", "false")):
-            flags |= MATMUL_FLAG_ACCUMULATE
+        accumulate = _parse_bool(operands.get("accumulate", "false"))
+        bf16 = _parse_bool(operands.get("bf16", "false"))
         instr = matmul(
             dst_addr=dst.addr,
             src_a_addr=src0.addr,
@@ -121,7 +118,8 @@ def _assemble_line(line: str, symbols: Mapping[str, int]) -> "InstructionLike":
             n=_parse_int(_require_operand(operands, "n"), symbols),
             k=_parse_int(_require_operand(operands, "k"), symbols),
             target=target,
-            accumulate=bool(flags & MATMUL_FLAG_ACCUMULATE),
+            accumulate=accumulate,
+            bf16=bf16,
         )
         return instr
     if mnemonic == "VECTOR_OP":

@@ -92,6 +92,7 @@ module tensor_core #(
   assign mxu_cmd.n = cmd.imm1;
   assign mxu_cmd.k = cmd.imm2;
   assign mxu_cmd.accumulate = cmd.flags[0];
+  assign mxu_cmd.bf16 = cmd.flags[5];
 
   assign vector_cmd.dst_addr = cmd.dst;
   assign vector_cmd.src0_addr = cmd.src0;

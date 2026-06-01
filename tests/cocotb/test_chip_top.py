@@ -16,8 +16,10 @@ from chip_helpers import (
     COUNTER_TC0_MXU2_ACTIVE,
     COUNTER_TC0_MXU3_ACTIVE,
     COUNTER_VECTOR_ACTIVE,
+    matrix_f32_from_bytes,
     matrix_i32_from_bytes,
     matrix_i8_bytes,
+    matrix_u16_bytes,
     load_program,
     read_hbm_bytes,
     read_counter,
@@ -28,10 +30,7 @@ from chip_helpers import (
 )
 from virtual_tpu.isa import (
     AddressSpace,
-    Instruction,
-    MATMUL_FLAG_BF16,
     MemoryRef,
-    Opcode,
     ReduceOp,
     UnitMask,
     barrier,
@@ -41,6 +40,7 @@ from virtual_tpu.isa import (
     matmul,
     reduce_op,
 )
+from virtual_tpu.numeric import bf16_matmul, float32_to_bf16
 from virtual_tpu.programs import Matmul16Layout, mlp_single_tile_program, matmul_16_program
 
 
@@ -83,25 +83,39 @@ async def chip_16x16_minmax_matmul(dut):
 
 
 @cocotb.test()
-async def chip_rejects_unsupported_bf16_flag(dut):
+async def chip_bf16_matmul_and_accumulate(dut):
     cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
     await reset(dut)
-    instr = matmul(dst_addr=0x0200, src_a_addr=0x0000, src_b_addr=0x0100, m=16, n=16, k=16)
-    bad = Instruction(
-        opcode=Opcode.MATMUL.value,
-        flags=instr.flags | MATMUL_FLAG_BF16,
-        target=instr.target,
-        dst=instr.dst,
-        src0=instr.src0,
-        src1=instr.src1,
-        imm0=instr.imm0,
-        imm1=instr.imm1,
-        imm2=instr.imm2,
-    )
-    await load_program(dut, [bad, halt()])
+    a_f32 = np.array([[1.5, -2.0], [0.25, 4.0]], dtype=np.float32)
+    b_f32 = np.array([[2.0, 3.0], [-1.0, 0.5]], dtype=np.float32)
+    c_base = np.array([[10.0, -1.0], [0.5, 7.0]], dtype=np.float32)
+    a_bf16 = float32_to_bf16(a_f32)
+    b_bf16 = float32_to_bf16(b_f32)
+    program = [
+        dma_copy(dst=MemoryRef(AddressSpace.VMEM0, 0x0000), src=MemoryRef(AddressSpace.HBM, 0x0000), length=8),
+        dma_copy(dst=MemoryRef(AddressSpace.VMEM0, 0x0010), src=MemoryRef(AddressSpace.HBM, 0x0010), length=8),
+        dma_copy(dst=MemoryRef(AddressSpace.VMEM0, 0x0040), src=MemoryRef(AddressSpace.HBM, 0x0040), length=16),
+        barrier(UnitMask.DMA),
+        matmul(dst_addr=0x0020, src_a_addr=0x0000, src_b_addr=0x0010, m=2, n=2, k=2, bf16=True),
+        matmul(dst_addr=0x0040, src_a_addr=0x0000, src_b_addr=0x0010, m=2, n=2, k=2, accumulate=True, bf16=True),
+        barrier(UnitMask.MXU),
+        dma_copy(dst=MemoryRef(AddressSpace.HBM, 0x0100), src=MemoryRef(AddressSpace.VMEM0, 0x0020), length=16),
+        dma_copy(dst=MemoryRef(AddressSpace.HBM, 0x0120), src=MemoryRef(AddressSpace.VMEM0, 0x0040), length=16),
+        barrier(UnitMask.DMA),
+        halt(),
+    ]
+    await load_program(dut, program)
+    await write_hbm_bytes(dut, 0x0000, matrix_u16_bytes(a_bf16))
+    await write_hbm_bytes(dut, 0x0010, matrix_u16_bytes(b_bf16))
+    await write_hbm_bytes(dut, 0x0040, np.asarray(c_base, dtype=np.float32).tobytes())
     status, error_code = await start_and_wait(dut)
-    assert status & 0b100
-    assert error_code != 0
+    assert status & 0b001, f"expected done, status={status:#x} error_code={error_code:#x}"
+    assert not (status & 0b100), f"unexpected error_code={error_code:#x}"
+    product = matrix_f32_from_bytes(await read_hbm_bytes(dut, 0x0100, 16), rows=2, cols=2)
+    accumulated = matrix_f32_from_bytes(await read_hbm_bytes(dut, 0x0120, 16), rows=2, cols=2)
+    expected = bf16_matmul(a_bf16, b_bf16)
+    np.testing.assert_allclose(product, expected, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(accumulated, expected + c_base, rtol=1e-6, atol=1e-6)
 
 
 @cocotb.test()

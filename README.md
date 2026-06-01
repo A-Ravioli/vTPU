@@ -123,7 +123,7 @@ Read the ISA spec in [docs/03_ISA.md](docs/03_ISA.md), the Python encoding in [s
 
 ### 9. Numerics start exact, then broaden
 
-The first implemented compute path is int8 inputs with int32 accumulation because exact integer behavior makes verification crisp. BF16/FP32 exists as a Python reference path so numeric behavior can be specified before committing it to RTL. Current RTL rejects BF16 programs rather than silently pretending support.
+The first implemented compute path is int8 inputs with int32 accumulation because exact integer behavior makes verification crisp. BF16/FP32 matmul also runs in the Python reference path and in RTL simulation: BF16 operands are stored as raw 16-bit values, expanded to FP32 for accumulation, and written back as FP32 results. FP16 and BF16 vector/reduce paths are intentionally out of scope for now.
 
 The numeric plan is in [docs/04_NUMERICS.md](docs/04_NUMERICS.md), and the Python helpers are in [src/virtual_tpu/numeric.py](src/virtual_tpu/numeric.py).
 
@@ -153,7 +153,7 @@ That path is the heart of the repo: a program is data movement plus local comput
 - Simulated HBM, CMEM, VMEM0, and VMEM1 memory spaces.
 - Exact int8 x int8 -> int32 tiled matmul behavior.
 - Vector and reduce golden operations.
-- BF16/FP32 Python reference path.
+- BF16/FP32 Python reference path and RTL-simulation matmul path.
 - Packed-tile 64x64 matmul and single-tile MLP lowering examples.
 - Python 3D mesh/torus architectural simulator.
 - Structured tiny-target layout search with JSONL experiment logs and OpenROAD fragments.
@@ -164,7 +164,7 @@ That path is the heart of the repo: a program is data movement plus local comput
 - pytest-based Python verification.
 - Verilator lint and cocotb unit-test harness.
 
-BF16 remains Python-reference-only for now; the RTL rejects BF16 rather than executing an unsupported mode.
+BF16 matmul is supported in RTL simulation; FP16 and BF16 vector/reduce remain unsupported.
 
 ## Repository Layout
 

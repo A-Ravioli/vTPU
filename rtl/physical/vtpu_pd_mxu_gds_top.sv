@@ -42,6 +42,7 @@ module vtpu_pd_mxu_gds_top (
   assign cmd.n = n;
   assign cmd.k = k;
   assign cmd.accumulate = accumulate;
+  assign cmd.bf16 = 1'b0;
 
   assign vmem_resp.ready = vmem_ready;
   assign vmem_resp.valid = vmem_valid;

@@ -49,9 +49,10 @@ package vtpu_pkg;
   // matmul modifier bits in the instruction flags byte
   localparam logic [7:0] MATMUL_FLAG_ACCUMULATE = 8'h01;  // add into existing dst
   localparam logic [7:0] MATMUL_FLAG_SIGNED = 8'h08;
-  localparam logic [7:0] MATMUL_FLAG_BF16 = 8'h20;  // rejected in rtl mvp; python golden only
+  localparam logic [7:0] MATMUL_FLAG_BF16 = 8'h20;  // simulation bf16 matmul path
   localparam logic [7:0] MATMUL_SUPPORTED_FLAGS = MATMUL_FLAG_ACCUMULATE |
-                                                  MATMUL_FLAG_SIGNED;
+                                                  MATMUL_FLAG_SIGNED |
+                                                  MATMUL_FLAG_BF16;
 
   typedef enum logic [7:0] {
     OPC_NOP        = 8'h00,
@@ -132,6 +133,7 @@ package vtpu_pkg;
     logic [15:0] n;
     logic [15:0] k;
     logic        accumulate;
+    logic        bf16;
   } mxu_cmd_t;
 
   typedef struct packed {

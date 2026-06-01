@@ -57,8 +57,8 @@ def pack_dma_cmd(src_space: int, dst_space: int, src_addr: int, dst_addr: int, l
     return ((src_space & 0x7) << 99) | ((dst_space & 0x7) << 96) | ((src_addr & 0xFFFFFFFF) << 64) | ((dst_addr & 0xFFFFFFFF) << 32) | (length & 0xFFFFFFFF)
 
 
-def pack_mxu_cmd(dst: int, a: int, b: int, m: int, n: int, k: int, accumulate: int = 0) -> int:
-    return ((dst & 0xFFFF) << 81) | ((a & 0xFFFF) << 65) | ((b & 0xFFFF) << 49) | ((m & 0xFFFF) << 33) | ((n & 0xFFFF) << 17) | ((k & 0xFFFF) << 1) | (accumulate & 1)
+def pack_mxu_cmd(dst: int, a: int, b: int, m: int, n: int, k: int, accumulate: int = 0, bf16: int = 0) -> int:
+    return ((dst & 0xFFFF) << 82) | ((a & 0xFFFF) << 66) | ((b & 0xFFFF) << 50) | ((m & 0xFFFF) << 34) | ((n & 0xFFFF) << 18) | ((k & 0xFFFF) << 2) | ((accumulate & 1) << 1) | (bf16 & 1)
 
 
 def pack_vector_cmd(dst: int, src0: int, src1: int, length: int, op: int, imm: int = 0) -> int:
@@ -82,6 +82,19 @@ def word_from_i8(values) -> int:
     for idx, value in enumerate(values):
         result |= (value & 0xFF) << (idx * 8)
     return result
+
+
+def word_from_u16(values) -> int:
+    result = 0
+    for idx, value in enumerate(values):
+        result |= (int(value) & 0xFFFF) << (idx * 16)
+    return result
+
+
+def f32_from_word(value: int) -> float:
+    import struct
+
+    return struct.unpack("<f", int(value).to_bytes(4, byteorder="little", signed=False))[0]
 
 
 async def reset_clocked(dut) -> None:
@@ -213,6 +226,28 @@ async def mxu_top_vmem_smoke(dut):
     await issue_cmd(dut, pack_mxu_cmd(dst=32, a=0, b=16, m=2, n=2, k=2))
     await wait_done_status(dut)
     assert [memory[32 + (i * 4)] for i in range(4)] == [19, 22, 43, 50]
+
+
+@cocotb.test()
+async def mxu_top_bf16_vmem_smoke(dut):
+    if top_name(dut) != "mxu_top":
+        return
+    await reset_clocked(dut)
+    memory = {
+        0: word_from_u16([0x3FC0, 0xC000]),  # [1.5, -2.0]
+        4: word_from_u16([0x3E80, 0x4080]),  # [0.25, 4.0]
+        16: word_from_u16([0x4000, 0x4040]),  # [2.0, 3.0]
+        20: word_from_u16([0xBF80, 0x3F00]),  # [-1.0, 0.5]
+    }
+    dut.vmem_resp.value = pack_vmem_resp(1, 0)
+    cocotb.start_soon(run_vmem_responder(dut, dut.vmem_req, dut.vmem_resp, memory))
+    await Timer(1, unit="ps")
+    await issue_cmd(dut, pack_mxu_cmd(dst=32, a=0, b=16, m=2, n=2, k=2, bf16=1))
+    await wait_done_status(dut)
+    observed = [f32_from_word(memory[32 + (i * 4)]) for i in range(4)]
+    expected = [5.0, 3.5, -3.5, 2.75]
+    for got, want in zip(observed, expected):
+        assert abs(got - want) < 1e-6
 
 
 @cocotb.test()

@@ -20,6 +20,7 @@ def run_unit(name: str, sources: list[str], extra_args: list[str] | None = None)
         hdl_toplevel=name,
         test_module="test_unit_matrix",
         build_dir=REPO / f"sim_build/{name}",
+        test_dir=REPO / "tests/cocotb",
         waves=True,
     )
 

@@ -14,4 +14,4 @@ Implemented now:
 - `tensor_core.sv`, `vector_unit.sv`, and `reduce_unit.sv` VMEM-connected datapaths with four MXUs per TensorCore
 - `virtual_tpu_v4_top.sv` structural chip top with HBM, CMEM, two TensorCores, DMA, control, and counters
 
-The Python golden model is the executable source of truth for full-program behavior. The RTL currently lint-checks under Verilator and has cocotb coverage for PE behavior, the standalone RTL unit matrix, HBM-visible 16x16 matmul, TC1/VMEM1 targeting, CMEM staging, multi-MXU auto-scheduling, MLP-style vector execution, reductions, error handling, and host-readable counters. BF16 remains rejected in RTL and available only in the Python reference path.
+The Python golden model is the executable source of truth for full-program behavior. The RTL currently lint-checks under Verilator and has cocotb coverage for PE behavior, the standalone RTL unit matrix, HBM-visible 16x16 matmul, BF16 matmul in simulation, TC1/VMEM1 targeting, CMEM staging, multi-MXU auto-scheduling, MLP-style vector execution, reductions, error handling, and host-readable counters. FP16 and BF16 vector/reduce remain unsupported.

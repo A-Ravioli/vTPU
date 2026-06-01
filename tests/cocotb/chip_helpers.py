@@ -134,5 +134,13 @@ def matrix_i8_bytes(matrix: np.ndarray) -> bytes:
     return np.asarray(matrix, dtype=np.int8, order="C").tobytes(order="C")
 
 
+def matrix_u16_bytes(matrix: np.ndarray) -> bytes:
+    return np.asarray(matrix, dtype=np.uint16, order="C").tobytes(order="C")
+
+
 def matrix_i32_from_bytes(payload: bytes, rows: int = 16, cols: int = 16) -> np.ndarray:
     return np.frombuffer(payload, dtype=np.int32).reshape(rows, cols).copy()
+
+
+def matrix_f32_from_bytes(payload: bytes, rows: int = 16, cols: int = 16) -> np.ndarray:
+    return np.frombuffer(payload, dtype=np.float32).reshape(rows, cols).copy()

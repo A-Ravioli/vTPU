@@ -38,5 +38,6 @@ def test_chip_top_cocotb() -> None:
         hdl_toplevel="virtual_tpu_v4_top",
         test_module="test_chip_top",
         build_dir=REPO / "sim_build/chip_top",
+        test_dir=REPO / "tests/cocotb",
         waves=True,
     )

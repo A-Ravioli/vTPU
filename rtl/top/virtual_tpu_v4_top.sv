@@ -1,11 +1,11 @@
 // Module: virtual_tpu_v4_top
 // Purpose: Structural educational TPU v4-inspired chip shell for int8/int32 programs.
 // Public TPU inspiration: Host-loaded instruction streams drive DMA, local VMEM, MXU, vector, and reduce units.
-// Educational simplification: Deterministic SRAM/HBM models and in-order control; BF16 is rejected in RTL.
+// Educational simplification: Deterministic SRAM/HBM models and in-order control; BF16 matmul is simulation-only.
 // Inputs: clock/reset and 32-bit host/MMIO request channel.
 // Outputs: host response plus done/busy/error status.
 // Structure: instr_mem + decoder + control_fsm + DMA + HBM + CMEM + two TensorCores.
-// Errors: malformed instructions, bad spaces, bad targets, unaligned accesses, out-of-bounds accesses, and BF16 enter ERROR.
+// Errors: malformed instructions, bad spaces, bad targets, unaligned accesses, and out-of-bounds accesses enter ERROR.
 // Tests: Chip-level cocotb compares HBM-visible results and MMIO counters to Python expectations.
 module virtual_tpu_v4_top #(
   parameter int NUM_TENSOR_CORES = 2,
