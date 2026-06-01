@@ -244,6 +244,76 @@ def matmul_tiled_packed_program(layout: TiledMatmulLayout | None = None) -> list
 
 
 @dataclass(frozen=True)
+class Matmul128Layout:
+    """Byte offsets for a single 128x128 int8 matmul in HBM and VMEM.
+
+    Tile sizes:
+      A / B: 128*128 int8 = 16384 bytes each
+      C:     128*128 int32 = 65536 bytes
+    Total VMEM footprint: 16384 + 16384 + 65536 = 98304 bytes (fits in 256 KB VMEM).
+    """
+
+    hbm_a: int = 0x00000
+    hbm_b: int = 0x04000   # 16384 bytes after A
+    hbm_c: int = 0x08000   # 16384 bytes after B
+    vmem_a: int = 0x0000
+    vmem_b: int = 0x4000   # 16384 bytes after A
+    vmem_c: int = 0x8000   # 16384 bytes after B
+    tile_bytes: int = 128 * 128        # 16384 bytes per int8 operand
+    result_bytes: int = 128 * 128 * 4  # 65536 bytes for int32 output
+
+
+def matmul_128_program(layout: Matmul128Layout | None = None) -> list[Instruction]:
+    """End-to-end 128x128 int8 matmul: hbm -> vmem -> mxu -> hbm.
+
+    Same structure as matmul_16_program but for the 128x128 systolic array.
+    The C tile is 65536 bytes (128*128*4), which exceeds the 16-bit ISA length
+    field, so the CLEAR and store DMA are each split into two 32768-byte ops.
+    """
+    layout = layout or Matmul128Layout()
+    half_c = layout.result_bytes // 2  # 32768 bytes — fits in 16-bit imm0
+    return [
+        dma_copy(
+            dst=MemoryRef(AddressSpace.VMEM0, layout.vmem_a),
+            src=MemoryRef(AddressSpace.HBM, layout.hbm_a),
+            length=layout.tile_bytes,
+        ),
+        dma_copy(
+            dst=MemoryRef(AddressSpace.VMEM0, layout.vmem_b),
+            src=MemoryRef(AddressSpace.HBM, layout.hbm_b),
+            length=layout.tile_bytes,
+        ),
+        barrier(UnitMask.DMA),
+        # CLEAR in two halves: C tile is 65536 bytes, exceeds 16-bit imm0 limit
+        clear(dst=MemoryRef(AddressSpace.VMEM0, layout.vmem_c), length=half_c),
+        clear(dst=MemoryRef(AddressSpace.VMEM0, layout.vmem_c + half_c), length=half_c),
+        matmul(
+            dst_addr=layout.vmem_c,
+            src_a_addr=layout.vmem_a,
+            src_b_addr=layout.vmem_b,
+            m=128,
+            n=128,
+            k=128,
+            target=0x10,
+        ),
+        barrier(UnitMask.MXU),
+        # Store C in two halves for the same reason
+        dma_copy(
+            dst=MemoryRef(AddressSpace.HBM, layout.hbm_c),
+            src=MemoryRef(AddressSpace.VMEM0, layout.vmem_c),
+            length=half_c,
+        ),
+        dma_copy(
+            dst=MemoryRef(AddressSpace.HBM, layout.hbm_c + half_c),
+            src=MemoryRef(AddressSpace.VMEM0, layout.vmem_c + half_c),
+            length=half_c,
+        ),
+        barrier(UnitMask.DMA),
+        halt(),
+    ]
+
+
+@dataclass(frozen=True)
 class SplitMatmul8Layout:
     """Memory layout for four concurrent 8x8 int8 matmuls on the split 2x2 array.
 
