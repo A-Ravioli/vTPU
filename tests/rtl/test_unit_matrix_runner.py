@@ -41,8 +41,12 @@ def test_mxu_top_cocotb() -> None:
         "mxu_top",
         [
             "rtl/common/vtpu_pkg.sv",
+            "rtl/primitive/pe_int8.sv",
             "rtl/primitive/fp32_mul.sv",
             "rtl/primitive/fp32_add.sv",
+            "rtl/primitive/pe_bf16.sv",
+            "rtl/mxu/systolic_array.sv",
+            "rtl/mxu/systolic_array_bf16.sv",
             "rtl/mxu/mxu_top.sv",
         ],
     )
@@ -87,11 +91,15 @@ def test_tensor_core_cocotb() -> None:
         [
             "rtl/common/vtpu_pkg.sv",
             "rtl/memory/vmem_top.sv",
+            "rtl/primitive/pe_int8.sv",
             "rtl/primitive/fp32_mul.sv",
             "rtl/primitive/fp32_add.sv",
             "rtl/primitive/fp32_recip.sv",
             "rtl/primitive/fp32_rsqrt.sv",
             "rtl/primitive/fp32_exp.sv",
+            "rtl/primitive/pe_bf16.sv",
+            "rtl/mxu/systolic_array.sv",
+            "rtl/mxu/systolic_array_bf16.sv",
             "rtl/mxu/mxu_top.sv",
             "rtl/vector/vector_unit.sv",
             "rtl/vector/reduce_unit.sv",
