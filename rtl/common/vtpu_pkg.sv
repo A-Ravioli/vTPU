@@ -50,9 +50,11 @@ package vtpu_pkg;
   localparam logic [7:0] MATMUL_FLAG_ACCUMULATE = 8'h01;  // add into existing dst
   localparam logic [7:0] MATMUL_FLAG_SIGNED = 8'h08;
   localparam logic [7:0] MATMUL_FLAG_BF16 = 8'h20;  // simulation bf16 matmul path
+  localparam logic [7:0] MATMUL_FLAG_SPLIT_2X2   = 8'h80;  // four independent 8x8 sub-arrays
   localparam logic [7:0] MATMUL_SUPPORTED_FLAGS = MATMUL_FLAG_ACCUMULATE |
                                                   MATMUL_FLAG_SIGNED |
-                                                  MATMUL_FLAG_BF16;
+                                                  MATMUL_FLAG_BF16    |
+                                                  MATMUL_FLAG_SPLIT_2X2;
 
   typedef enum logic [7:0] {
     OPC_NOP        = 8'h00,

@@ -81,8 +81,16 @@ MATMUL_FLAG_SIGNED = 1 << 3  # int8 path (default on in matmul builder)
 MATMUL_FLAG_FIXED_POINT = 1 << 4
 MATMUL_FLAG_BF16 = 1 << 5
 MATMUL_FLAG_SATURATE_STORE = 1 << 6
+# Split 2×2: divide the 16×16 PE array into four independent 8×8 sub-arrays.
+# m and n encode per-partition dimensions (max 8).  A/B/C tiles are packed contiguously:
+# a_tile = [A0 | A1 | A2 | A3]  (each Ap is m×k bytes)
+# b_tile = [B0 | B1 | B2 | B3]  (each Bp is k×n bytes)
+# c_tile = [C0 | C1 | C2 | C3]  (each Cp is m×n int32 = m*n*4 bytes)
+MATMUL_FLAG_SPLIT_2X2 = 1 << 7
 
-SUPPORTED_MATMUL_FLAGS = MATMUL_FLAG_ACCUMULATE | MATMUL_FLAG_SIGNED | MATMUL_FLAG_BF16  # mvp subset
+SUPPORTED_MATMUL_FLAGS = (
+    MATMUL_FLAG_ACCUMULATE | MATMUL_FLAG_SIGNED | MATMUL_FLAG_BF16 | MATMUL_FLAG_SPLIT_2X2
+)
 
 # one 128-bit instruction word: (field name, bit shift from lsb, mask)
 FIELD_LAYOUT = (
@@ -337,6 +345,54 @@ def reduce_op(
         imm0=length,
         imm1=reduce_op_value,
         imm2=columns,
+    )
+
+
+def split_matmul(
+    *,
+    dst_addr: int,
+    src_a_addr: int,
+    src_b_addr: int,
+    m: int,
+    n: int,
+    k: int,
+    target: int = 0x10,
+    accumulate: bool = False,
+) -> Instruction:
+    """Four independent m×k @ k×n matmuls packed into one instruction (split 2×2 mode).
+
+    Data layout in VMEM:
+      A tiles: [A0 | A1 | A2 | A3] at src_a_addr, each m*k bytes (int8)
+      B tiles: [B0 | B1 | B2 | B3] at src_b_addr, each k*n bytes (int8)
+      C tiles: [C0 | C1 | C2 | C3] at dst_addr,   each m*n*4 bytes (int32)
+
+    m and n must be <= 8 (half the 16×16 array dimensions).
+    """
+    if m > 8 or n > 8:
+        raise ISAError("split_matmul: m and n must be <= 8 (half the array size)")
+    for name, value in (
+        ("dst_addr", dst_addr),
+        ("src_a_addr", src_a_addr),
+        ("src_b_addr", src_b_addr),
+        ("m", m),
+        ("n", n),
+        ("k", k),
+    ):
+        if value > 0xFFFF:
+            raise ISAError(f"{name} must fit 16 bits in the MVP encoding")
+    flags = MATMUL_FLAG_SIGNED | MATMUL_FLAG_SPLIT_2X2
+    if accumulate:
+        flags |= MATMUL_FLAG_ACCUMULATE
+    return Instruction(
+        opcode=Opcode.MATMUL.value,
+        flags=flags,
+        target=target,
+        dst=dst_addr,
+        src0=src_a_addr,
+        src1=src_b_addr,
+        imm0=m,
+        imm1=n,
+        imm2=k,
     )
 
 

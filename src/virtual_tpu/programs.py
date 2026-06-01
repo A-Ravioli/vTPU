@@ -14,6 +14,7 @@ from virtual_tpu.isa import (  # helpers that build Instruction objects for the 
     dma_copy,
     halt,
     matmul,
+    split_matmul,
     vector_op,
 )
 
@@ -240,6 +241,97 @@ def matmul_tiled_packed_program(layout: TiledMatmulLayout | None = None) -> list
             program.append(barrier(UnitMask.DMA))
     program.append(halt())
     return program
+
+
+@dataclass(frozen=True)
+class SplitMatmul8Layout:
+    """Memory layout for four concurrent 8x8 int8 matmuls on the split 2x2 array.
+
+    Four independent A, B, C tiles are packed consecutively in HBM and VMEM.
+    Tile order: partition 0 (top-left), 1 (top-right), 2 (bottom-left), 3 (bottom-right).
+    """
+
+    hbm_a: int = 0x0000   # base of packed A tiles in HBM
+    hbm_b: int = 0x0200   # base of packed B tiles (4 * 8*8 = 256 bytes after A)
+    hbm_c: int = 0x0400   # base of packed C tiles (4 * 8*8*4 = 1024 bytes after B)
+    vmem_a: int = 0x0000
+    vmem_b: int = 0x0200
+    vmem_c: int = 0x0400
+    tile_m: int = 8
+    tile_n: int = 8
+    tile_k: int = 8
+    num_parts: int = 4
+
+    @property
+    def a_tile_bytes(self) -> int:
+        return self.tile_m * self.tile_k  # int8
+
+    @property
+    def b_tile_bytes(self) -> int:
+        return self.tile_k * self.tile_n  # int8
+
+    @property
+    def c_tile_bytes(self) -> int:
+        return self.tile_m * self.tile_n * 4  # int32
+
+    @property
+    def total_a_bytes(self) -> int:
+        return self.num_parts * self.a_tile_bytes
+
+    @property
+    def total_b_bytes(self) -> int:
+        return self.num_parts * self.b_tile_bytes
+
+    @property
+    def total_c_bytes(self) -> int:
+        return self.num_parts * self.c_tile_bytes
+
+
+def split_matmul_8_program(layout: SplitMatmul8Layout | None = None) -> list[Instruction]:
+    """Four independent 8x8x8 int8 matmuls dispatched as a single split 2x2 instruction.
+
+    Demonstrates the split array: four separate A/B pairs are multiplied concurrently,
+    producing four separate C results.  The hardware executes all four in parallel with
+    the same latency as a single 8x8x8 matmul (k cycles of MAC), not 4x that.
+
+    Memory flow:
+      HBM[hbm_a..hbm_a+256] -> VMEM[vmem_a..vmem_a+256]  (4 A tiles, int8)
+      HBM[hbm_b..hbm_b+256] -> VMEM[vmem_b..vmem_b+256]  (4 B tiles, int8)
+      MATMUL split 2x2  (4 concurrent 8x8x8 matmuls)
+      VMEM[vmem_c..vmem_c+1024] -> HBM[hbm_c..hbm_c+1024] (4 C tiles, int32)
+    """
+    layout = layout or SplitMatmul8Layout()
+    return [
+        dma_copy(
+            dst=MemoryRef(AddressSpace.VMEM0, layout.vmem_a),
+            src=MemoryRef(AddressSpace.HBM, layout.hbm_a),
+            length=layout.total_a_bytes,
+        ),
+        dma_copy(
+            dst=MemoryRef(AddressSpace.VMEM0, layout.vmem_b),
+            src=MemoryRef(AddressSpace.HBM, layout.hbm_b),
+            length=layout.total_b_bytes,
+        ),
+        barrier(UnitMask.DMA),
+        clear(dst=MemoryRef(AddressSpace.VMEM0, layout.vmem_c), length=layout.total_c_bytes),
+        split_matmul(
+            dst_addr=layout.vmem_c,
+            src_a_addr=layout.vmem_a,
+            src_b_addr=layout.vmem_b,
+            m=layout.tile_m,
+            n=layout.tile_n,
+            k=layout.tile_k,
+            target=0x10,
+        ),
+        barrier(UnitMask.MXU),
+        dma_copy(
+            dst=MemoryRef(AddressSpace.HBM, layout.hbm_c),
+            src=MemoryRef(AddressSpace.VMEM0, layout.vmem_c),
+            length=layout.total_c_bytes,
+        ),
+        barrier(UnitMask.DMA),
+        halt(),
+    ]
 
 
 def multi_mxu_tiled_matmul_program(layout: TiledMatmulLayout | None = None) -> list[Instruction]:

@@ -11,6 +11,7 @@ from virtual_tpu.isa import (  # encoding helpers and matmul flag bits
     ISAError,
     MATMUL_FLAG_ACCUMULATE,
     MATMUL_FLAG_BF16,
+    MATMUL_FLAG_SPLIT_2X2,
     SUPPORTED_MATMUL_FLAGS,
     AddressSpace,
     Instruction,
@@ -159,6 +160,9 @@ class GoldenExecutor:
         if instr.imm0 == 0 or instr.imm1 == 0 or instr.imm2 == 0:
             raise ExecutionError("MATMUL dimensions must be nonzero")
         m, n, k = instr.imm0, instr.imm1, instr.imm2
+        if instr.flags & MATMUL_FLAG_SPLIT_2X2:
+            self._execute_split_matmul(instr, m, n, k)
+            return
         for vmem_space in self._target_vmem_spaces(instr.target):
             self.counters.mxu_active_cycles += k
             if instr.flags & MATMUL_FLAG_BF16:
@@ -179,6 +183,38 @@ class GoldenExecutor:
 
             result = wrap_i32(c_base + (a @ b))
             self.memory.write_i32_matrix(vmem_space, instr.dst, result)
+
+    def _execute_split_matmul(self, instr: Instruction, m: int, n: int, k: int) -> None:
+        """Four independent m×k @ k×n matmuls on the split 2×2 array.
+
+        Data layout in VMEM (contiguous packed tiles):
+          A tiles: src_a, src_a + m*k, src_a + 2*m*k, src_a + 3*m*k  (int8)
+          B tiles: src_b, src_b + k*n, src_b + 2*k*n, src_b + 3*k*n  (int8)
+          C tiles: dst,   dst + m*n*4, dst + 2*m*n*4, dst + 3*m*n*4  (int32)
+
+        Hardware executes all four partitions concurrently; the golden model runs them
+        sequentially for simplicity while producing identical outputs.
+        """
+        if m > 8 or n > 8:
+            raise ExecutionError("SPLIT_2X2 matmul: m and n must be <= 8")
+        a_stride = m * k           # bytes per A tile (int8)
+        b_stride = k * n           # bytes per B tile (int8)
+        c_stride = m * n * 4      # bytes per C tile (int32)
+        for vmem_space in self._target_vmem_spaces(instr.target):
+            # All 4 partitions run in parallel on hardware; active cycles = k (not 4*k)
+            self.counters.mxu_active_cycles += k
+            for p in range(4):
+                a_addr = instr.src0 + p * a_stride
+                b_addr = instr.src1 + p * b_stride
+                c_addr = instr.dst  + p * c_stride
+                a = self.memory.read_i8_matrix(vmem_space, a_addr, m, k).astype(np.int64)
+                b = self.memory.read_i8_matrix(vmem_space, b_addr, k, n).astype(np.int64)
+                if instr.flags & MATMUL_FLAG_ACCUMULATE:
+                    c_base = self.memory.read_i32_matrix(vmem_space, c_addr, m, n).astype(np.int64)
+                else:
+                    c_base = np.zeros((m, n), dtype=np.int64)
+                result = wrap_i32(c_base + (a @ b))
+                self.memory.write_i32_matrix(vmem_space, c_addr, result)
 
     def _execute_vector_op(self, instr: Instruction) -> None:
         if instr.imm0 == 0:
