@@ -52,7 +52,11 @@ class UnitMask(IntFlag):
 
 
 class VectorOp(IntEnum):
-    """sub-opcode for VECTOR_OP; stored in instruction imm1."""
+    """sub-opcode for VECTOR_OP; stored in instruction imm1.
+
+    Ops 0-5 operate on int32 VMEM data. Ops 6+ operate on fp32 VMEM data
+    (synthesizable bf16/fp32 fabric: see rtl/primitive/fp32_*.sv).
+    """
 
     VADD = 0
     VMUL = 1
@@ -60,10 +64,25 @@ class VectorOp(IntEnum):
     VRELU = 3
     VCLAMP = 4
     VMAX = 5
+    # fp32 elementwise / unary ops
+    FADD = 6          # dst[i] = src0[i] + src1[i]
+    FMUL = 7          # dst[i] = src0[i] * src1[i]
+    FMAX = 8          # dst[i] = max(src0[i], src1[i])
+    FEXP = 9          # dst[i] = exp(src0[i])
+    FRECIP = 10       # dst[i] = 1 / src0[i]
+    FRSQRT = 11       # dst[i] = 1 / sqrt(src0[i])
+    FSIGMOID = 12     # dst[i] = 1 / (1 + exp(-src0[i]))
+    FSILU = 13        # dst[i] = src0[i] * sigmoid(src0[i])
+    FSCALE_BCAST = 14  # dst[i] = src0[i] * src1[0]  (broadcast scalar)
+    FQUANT_BF16 = 15  # cast: read `length` fp32 from src0, write bf16 packed 2/word to dst
+
 
 
 class ReduceOp(IntEnum):
-    """sub-opcode for REDUCE; stored in instruction imm1."""
+    """sub-opcode for REDUCE; stored in instruction imm1.
+
+    Ops 0-5 reduce int32 data. Ops 6+ reduce fp32 data.
+    """
 
     SUM_ALL = 0
     MAX_ALL = 1
@@ -71,6 +90,12 @@ class ReduceOp(IntEnum):
     MAX_ROWS = 3
     SUM_COLS = 4
     MAX_COLS = 5
+    # fp32 reductions
+    FSUM_ALL = 6      # scalar = sum(src)         (fp32)
+    FMAX_ALL = 7      # scalar = max(src)         (fp32)
+    FSUMSQ_ALL = 8    # scalar = sum(src^2)       (fp32, for RMSNorm)
+    FSUM_ROWS = 9     # per-row sum               (fp32)
+    FMAX_ROWS = 10    # per-row max               (fp32, for softmax)
 
 
 # matmul modifier bits packed into the instruction flags byte
@@ -89,7 +114,11 @@ MATMUL_FLAG_SATURATE_STORE = 1 << 6
 MATMUL_FLAG_SPLIT_2X2 = 1 << 7
 
 SUPPORTED_MATMUL_FLAGS = (
-    MATMUL_FLAG_ACCUMULATE | MATMUL_FLAG_SIGNED | MATMUL_FLAG_BF16 | MATMUL_FLAG_SPLIT_2X2
+    MATMUL_FLAG_ACCUMULATE
+    | MATMUL_FLAG_TRANSPOSE_B
+    | MATMUL_FLAG_SIGNED
+    | MATMUL_FLAG_BF16
+    | MATMUL_FLAG_SPLIT_2X2
 )
 
 # one 128-bit instruction word: (field name, bit shift from lsb, mask)
@@ -205,18 +234,26 @@ def dma_copy(
     length: int,
     opcode: Opcode = Opcode.DMA_COPY,
 ) -> Instruction:
-    """build a dma (or load/store tile alias): copy length bytes src -> dst."""
+    """build a dma (or load/store tile alias): copy length bytes src -> dst.
+
+    Addresses are 32-bit: the low 16 bits live in dst/src0 and the high 16 bits in
+    imm1/imm2. This lets DMA reach GB-scale HBM and >64 KB VMEM while staying
+    backward compatible (programs with <64 KB addresses leave imm1/imm2 zero).
+    Length stays 16-bit (<=64 KB per transfer); the host issues many tile DMAs.
+    """
 
     if length > 0xFFFF:
-        raise ISAError("MVP DMA length must fit imm0")
-    if dst.addr > 0xFFFF or src.addr > 0xFFFF:
-        raise ISAError("MVP DMA addresses must fit 16-bit instruction fields")
+        raise ISAError("DMA length must fit imm0 (<=64 KB per transfer)")
+    if dst.addr > 0xFFFFFFFF or src.addr > 0xFFFFFFFF:
+        raise ISAError("DMA addresses must fit 32 bits")
     return Instruction(
         opcode=opcode.value,
         flags=pack_dma_flags(src.space, dst.space),
-        dst=dst.addr,
-        src0=src.addr,
+        dst=dst.addr & 0xFFFF,
+        src0=src.addr & 0xFFFF,
         imm0=length,
+        imm1=(dst.addr >> 16) & 0xFFFF,
+        imm2=(src.addr >> 16) & 0xFFFF,
     )
 
 
@@ -246,8 +283,13 @@ def matmul(
     target: int = 0x10,  # default tc0; see golden _target_vmem_spaces
     accumulate: bool = False,
     bf16: bool = False,
+    transpose_b: bool = False,
 ) -> Instruction:
-    """c = a @ b with dimensions m×k and k×n -> m×n; addresses are vmem byte offsets."""
+    """c = a @ b with dimensions m×k and k×n -> m×n; addresses are vmem byte offsets.
+
+    transpose_b: compute C = A @ B^T where B is stored row-major as [n][k]
+    (used for attention scores Q @ K^T).
+    """
 
     for name, value in (
         ("dst_addr", dst_addr),
@@ -264,6 +306,8 @@ def matmul(
         flags |= MATMUL_FLAG_ACCUMULATE
     if bf16:
         flags |= MATMUL_FLAG_BF16
+    if transpose_b:
+        flags |= MATMUL_FLAG_TRANSPOSE_B
     return Instruction(
         opcode=Opcode.MATMUL.value,
         flags=flags,

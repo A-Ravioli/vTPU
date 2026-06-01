@@ -12,6 +12,7 @@ from virtual_tpu.isa import (  # encoding helpers and matmul flag bits
     MATMUL_FLAG_ACCUMULATE,
     MATMUL_FLAG_BF16,
     MATMUL_FLAG_SPLIT_2X2,
+    MATMUL_FLAG_TRANSPOSE_B,
     SUPPORTED_MATMUL_FLAGS,
     AddressSpace,
     Instruction,
@@ -136,11 +137,14 @@ class GoldenExecutor:
     def _execute_dma(self, instr: Instruction) -> None:
         src_space, dst_space = unpack_dma_flags(instr.flags)
         length = instr.imm0
-        self._require_aligned(instr.src0, instr.dst, length)
+        # 32-bit addresses: low 16 bits in src0/dst, high 16 bits in imm2/imm1.
+        src_addr = (instr.imm2 << 16) | instr.src0
+        dst_addr = (instr.imm1 << 16) | instr.dst
+        self._require_aligned(src_addr, dst_addr, length)
         if length == 0:
             return
-        payload = self.memory.read(src_space, instr.src0, length)
-        self.memory.write(dst_space, instr.dst, payload)
+        payload = self.memory.read(src_space, src_addr, length)
+        self.memory.write(dst_space, dst_addr, payload)
         self.counters.dma_bytes += length
         if src_space == AddressSpace.HBM or dst_space == AddressSpace.HBM:
             self.counters.hbm_stall_cycles += 80 + ((length + 31) // 32)  # rough hbm latency model
@@ -165,9 +169,13 @@ class GoldenExecutor:
             return
         for vmem_space in self._target_vmem_spaces(instr.target):
             self.counters.mxu_active_cycles += k
+            transpose_b = bool(instr.flags & MATMUL_FLAG_TRANSPOSE_B)
             if instr.flags & MATMUL_FLAG_BF16:
                 a_bf16 = self.memory.read_u16_matrix(vmem_space, instr.src0, m, k)
-                b_bf16 = self.memory.read_u16_matrix(vmem_space, instr.src1, k, n)
+                if transpose_b:  # B stored [n][k]; transpose to [k][n]
+                    b_bf16 = self.memory.read_u16_matrix(vmem_space, instr.src1, n, k).T
+                else:
+                    b_bf16 = self.memory.read_u16_matrix(vmem_space, instr.src1, k, n)
                 c_result = bf16_matmul(a_bf16, b_bf16)
                 if instr.flags & MATMUL_FLAG_ACCUMULATE:
                     c_result = c_result + self.memory.read_f32_matrix(vmem_space, instr.dst, m, n)
@@ -175,7 +183,10 @@ class GoldenExecutor:
                 continue
 
             a = self.memory.read_i8_matrix(vmem_space, instr.src0, m, k).astype(np.int64)
-            b = self.memory.read_i8_matrix(vmem_space, instr.src1, k, n).astype(np.int64)
+            if transpose_b:
+                b = self.memory.read_i8_matrix(vmem_space, instr.src1, n, k).T.astype(np.int64)
+            else:
+                b = self.memory.read_i8_matrix(vmem_space, instr.src1, k, n).astype(np.int64)
             if instr.flags & MATMUL_FLAG_ACCUMULATE:
                 c_base = self.memory.read_i32_matrix(vmem_space, instr.dst, m, n).astype(np.int64)
             else:
@@ -222,6 +233,9 @@ class GoldenExecutor:
         self.counters.vector_active_cycles += max(1, (instr.imm0 + 15) // 16)  # ~16 elements per cycle
         op = VectorOp(instr.imm1)
         length = instr.imm0
+        if int(op) >= int(VectorOp.FADD):
+            self._execute_vector_fp(instr, op, length)
+            return
         for vmem_space in self._target_vmem_spaces(instr.target):
             src0 = self.memory.read_i32_vector(vmem_space, instr.src0, length).astype(np.int64)
 
@@ -245,12 +259,75 @@ class GoldenExecutor:
                 raise ExecutionError(f"unsupported VECTOR_OP {op}")
             self.memory.write_i32_vector(vmem_space, instr.dst, wrap_i32(result))
 
+    def _execute_vector_fp(self, instr: Instruction, op: VectorOp, length: int) -> None:
+        """fp32 elementwise / unary vector ops (ideal-math reference for the RTL fp fabric)."""
+        if op == VectorOp.FQUANT_BF16:
+            from virtual_tpu.numeric import float32_to_bf16
+            for vmem_space in self._target_vmem_spaces(instr.target):
+                src = self.memory.read_f32_vector(vmem_space, instr.src0, length).astype(np.float32)
+                bits = float32_to_bf16(src)  # uint16, packed little-endian 2-per-word
+                self.memory.write(vmem_space, instr.dst, np.asarray(bits, dtype="<u2").tobytes())
+            return
+        for vmem_space in self._target_vmem_spaces(instr.target):
+            src0 = self.memory.read_f32_vector(vmem_space, instr.src0, length).astype(np.float32)
+            if op == VectorOp.FADD:
+                src1 = self.memory.read_f32_vector(vmem_space, instr.src1, length).astype(np.float32)
+                result = src0 + src1
+            elif op == VectorOp.FMUL:
+                src1 = self.memory.read_f32_vector(vmem_space, instr.src1, length).astype(np.float32)
+                result = src0 * src1
+            elif op == VectorOp.FMAX:
+                src1 = self.memory.read_f32_vector(vmem_space, instr.src1, length).astype(np.float32)
+                result = np.maximum(src0, src1)
+            elif op == VectorOp.FEXP:
+                result = np.exp(src0)
+            elif op == VectorOp.FRECIP:
+                result = np.float32(1.0) / src0
+            elif op == VectorOp.FRSQRT:
+                result = np.float32(1.0) / np.sqrt(src0)
+            elif op == VectorOp.FSIGMOID:
+                result = np.float32(1.0) / (np.float32(1.0) + np.exp(-src0))
+            elif op == VectorOp.FSILU:
+                result = src0 * (np.float32(1.0) / (np.float32(1.0) + np.exp(-src0)))
+            elif op == VectorOp.FSCALE_BCAST:
+                scalar = self.memory.read_f32_vector(vmem_space, instr.src1, 1).astype(np.float32)[0]
+                result = src0 * scalar
+            else:
+                raise ExecutionError(f"unsupported fp VECTOR_OP {op}")
+            self.memory.write_f32_vector(vmem_space, instr.dst, result.astype(np.float32))
+
+    def _execute_reduce_fp(self, instr: Instruction, op: ReduceOp, length: int) -> None:
+        """fp32 reductions (ideal-math reference for the RTL fp fabric)."""
+        for vmem_space in self._target_vmem_spaces(instr.target):
+            values = self.memory.read_f32_vector(vmem_space, instr.src0, length).astype(np.float32)
+            if op == ReduceOp.FSUM_ALL:
+                result = np.array([values.sum(dtype=np.float32)], dtype=np.float32)
+            elif op == ReduceOp.FMAX_ALL:
+                result = np.array([values.max()], dtype=np.float32)
+            elif op == ReduceOp.FSUMSQ_ALL:
+                result = np.array([(values * values).sum(dtype=np.float32)], dtype=np.float32)
+            else:
+                columns = instr.imm2
+                if columns == 0 or length % columns != 0:
+                    raise ExecutionError("row fp REDUCE requires imm0=rows*cols and nonzero imm2 columns")
+                matrix = values.reshape(length // columns, columns)
+                if op == ReduceOp.FSUM_ROWS:
+                    result = matrix.sum(axis=1, dtype=np.float32)
+                elif op == ReduceOp.FMAX_ROWS:
+                    result = matrix.max(axis=1)
+                else:
+                    raise ExecutionError(f"unsupported fp REDUCE {op}")
+            self.memory.write_f32_vector(vmem_space, instr.dst, result.astype(np.float32))
+
     def _execute_reduce(self, instr: Instruction) -> None:
         if instr.imm0 == 0:
             raise ExecutionError("REDUCE length must be nonzero")
         self.counters.reduce_active_cycles += max(1, (instr.imm0 + 15) // 16)
         op = ReduceOp(instr.imm1)
         length = instr.imm0
+        if int(op) >= int(ReduceOp.FSUM_ALL):
+            self._execute_reduce_fp(instr, op, length)
+            return
 
         for vmem_space in self._target_vmem_spaces(instr.target):
             if op in {ReduceOp.SUM_ALL, ReduceOp.MAX_ALL}:

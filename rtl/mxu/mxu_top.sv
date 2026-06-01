@@ -53,11 +53,19 @@ module mxu_top #(
   logic [15:0] k_q;
   logic signed [DATA_W-1:0] a_q;
   logic signed [ACC_W-1:0] acc_q;
-  real a_f32_q;
-  real acc_f32_q;
+  logic [15:0] a_bf16_q;            // latched bf16 A operand
+  logic [ACC_W-1:0] acc_bits_q;     // fp32 bit-pattern accumulator for the bf16 path
   logic [1:0] byte_sel_q;
   logic [7:0] error_code_q;
   vtpu_pkg::vmem_req_t vmem_req_q;
+
+  // Synthesizable bf16 multiply-accumulate: bf16 operands widen to fp32, multiply, fp32 RNE add.
+  logic [15:0] b_bf16_sel;
+  logic [31:0] mxu_mul_prod;
+  logic [31:0] mxu_add_sum;
+  assign b_bf16_sel = select_u16(vmem_resp.rdata, byte_sel_q[1]);
+  fp32_mul u_mxu_mul (.a({a_bf16_q, 16'h0000}), .b({b_bf16_sel, 16'h0000}), .p(mxu_mul_prod));
+  fp32_add u_mxu_add (.a(acc_bits_q), .b(mxu_mul_prod), .s(mxu_add_sum));
 
   assign vmem_req = vmem_req_q;
   assign cmd_ready = (state_q == ST_IDLE);
@@ -77,7 +85,10 @@ module mxu_top #(
   function automatic logic [31:0] b_addr(input logic [15:0] kk, input logic [15:0] col);
     logic [31:0] elem_idx;
     begin
-      elem_idx = ({16'd0, kk} * {16'd0, cmd_q.n}) + {16'd0, col};
+      // normal: B[k][col] at k*n + col ; transpose_b: B stored [n][k], element at col*k + k
+      elem_idx = cmd_q.transpose_b
+                 ? (({16'd0, col} * {16'd0, cmd_q.k}) + {16'd0, kk})
+                 : (({16'd0, kk} * {16'd0, cmd_q.n}) + {16'd0, col});
       b_addr = {16'd0, cmd_q.b_addr} + (cmd_q.bf16 ? (elem_idx * 32'd2) : elem_idx);
     end
   endfunction
@@ -101,79 +112,6 @@ module mxu_top #(
 
   function automatic logic [15:0] select_u16(input logic [31:0] word, input logic sel);
     select_u16 = sel ? word[31:16] : word[15:0];
-  endfunction
-
-  function automatic real f32_bits_to_real(input logic [31:0] bits);
-    int unsigned exp;
-    int unsigned mant;
-    int shift;
-    real value;
-    begin
-      exp = {24'd0, bits[30:23]};
-      mant = {9'd0, bits[22:0]};
-      if (exp == 0 && mant == 0) begin
-        value = 0.0;
-      end else if (exp == 0) begin
-        value = real'(mant) / 8388608.0;
-        shift = -126;
-        while (shift < 0) begin
-          value = value / 2.0;
-          shift = shift + 1;
-        end
-      end else begin
-        value = 1.0 + (real'(mant) / 8388608.0);
-        shift = int'(exp) - 127;
-        while (shift > 0) begin
-          value = value * 2.0;
-          shift = shift - 1;
-        end
-        while (shift < 0) begin
-          value = value / 2.0;
-          shift = shift + 1;
-        end
-      end
-      f32_bits_to_real = bits[31] ? -value : value;
-    end
-  endfunction
-
-  function automatic real bf16_to_f32(input logic [15:0] bits);
-    bf16_to_f32 = f32_bits_to_real({bits, 16'h0000});
-  endfunction
-
-  function automatic logic [31:0] real_to_f32_bits(input real value);
-    logic sign;
-    int exp;
-    int unsigned exp_bits;
-    int unsigned mant;
-    real magnitude;
-    real normalized;
-    real scaled;
-    begin
-      if (value == 0.0) begin
-        real_to_f32_bits = 32'd0;
-      end else begin
-        sign = value < 0.0;
-        magnitude = sign ? -value : value;
-        exp = 0;
-        normalized = magnitude;
-        while (normalized >= 2.0) begin
-          normalized = normalized / 2.0;
-          exp = exp + 1;
-        end
-        while (normalized < 1.0) begin
-          normalized = normalized * 2.0;
-          exp = exp - 1;
-        end
-        scaled = (normalized - 1.0) * 8388608.0;
-        mant = int'(scaled + 0.5);
-        if (mant >= 8388608) begin
-          mant = 0;
-          exp = exp + 1;
-        end
-        exp_bits = exp + 127;
-        real_to_f32_bits = {sign, exp_bits[7:0], mant[22:0]};
-      end
-    end
   endfunction
 
   function automatic logic dimensions_ok(input vtpu_pkg::mxu_cmd_t local_cmd);
@@ -231,7 +169,7 @@ module mxu_top #(
     begin
       k_q <= 16'd0;
       acc_q <= 32'sd0;
-      acc_f32_q <= 0.0;
+      acc_bits_q <= 32'd0;
       if ((row_q == (cmd_q.m - 16'd1)) && (col_q == (cmd_q.n - 16'd1))) begin
         state_q <= ST_DONE;
       end else if (col_q == (cmd_q.n - 16'd1)) begin
@@ -248,10 +186,7 @@ module mxu_top #(
   always_ff @(posedge clk or negedge rst_n) begin
     logic [31:0] byte_addr;
     logic signed [7:0] b_value;
-    logic [15:0] b_bf16;
     logic signed [ACC_W-1:0] next_acc;
-    real b_f32;
-    real next_acc_f32;
 
     if (!rst_n) begin
       state_q <= ST_IDLE;
@@ -261,8 +196,8 @@ module mxu_top #(
       k_q <= 16'd0;
       a_q <= '0;
       acc_q <= '0;
-      a_f32_q <= 0.0;
-      acc_f32_q <= 0.0;
+      a_bf16_q <= '0;
+      acc_bits_q <= '0;
       byte_sel_q <= 2'd0;
       error_code_q <= vtpu_pkg::ERR_NONE;
       clear_req();
@@ -281,7 +216,7 @@ module mxu_top #(
               col_q <= 16'd0;
               k_q <= 16'd0;
               acc_q <= 32'sd0;
-              acc_f32_q <= 0.0;
+              acc_bits_q <= 32'd0;
               state_q <= cmd.accumulate ? ST_READ_C_REQ : ST_READ_A_REQ;
             end
           end
@@ -301,7 +236,7 @@ module mxu_top #(
               enter_error(vtpu_pkg::ERR_BAD_ADDR);
             end else begin
               if (cmd_q.bf16) begin
-                acc_f32_q <= f32_bits_to_real(vmem_resp.rdata);
+                acc_bits_q <= vmem_resp.rdata;
               end else begin
                 acc_q <= $signed(vmem_resp.rdata);
               end
@@ -326,7 +261,7 @@ module mxu_top #(
               enter_error(vtpu_pkg::ERR_BAD_ADDR);
             end else begin
               if (cmd_q.bf16) begin
-                a_f32_q <= bf16_to_f32(select_u16(vmem_resp.rdata, byte_sel_q[1]));
+                a_bf16_q <= select_u16(vmem_resp.rdata, byte_sel_q[1]);
               end else begin
                 a_q <= select_i8(vmem_resp.rdata, byte_sel_q);
               end
@@ -351,10 +286,8 @@ module mxu_top #(
               enter_error(vtpu_pkg::ERR_BAD_ADDR);
             end else begin
               if (cmd_q.bf16) begin
-                b_bf16 = select_u16(vmem_resp.rdata, byte_sel_q[1]);
-                b_f32 = bf16_to_f32(b_bf16);
-                next_acc_f32 = acc_f32_q + (a_f32_q * b_f32);
-                acc_f32_q <= next_acc_f32;
+                // mxu_add_sum = acc_bits_q + (a_bf16_q * b_bf16_sel) in fp32 (combinational)
+                acc_bits_q <= mxu_add_sum;
               end else begin
                 b_value = select_i8(vmem_resp.rdata, byte_sel_q);
                 next_acc = acc_q + (a_q * b_value);
@@ -375,7 +308,7 @@ module mxu_top #(
             state_q <= ST_WRITE_C_WAIT;
           end else begin
             if (cmd_q.bf16) begin
-              drive_write(c_addr(row_q, col_q), real_to_f32_bits(acc_f32_q));
+              drive_write(c_addr(row_q, col_q), acc_bits_q);
             end else begin
               drive_write(c_addr(row_q, col_q), acc_q);
             end

@@ -65,8 +65,9 @@ module control_fsm #(
 
   assign dma_cmd.src_space = decoded.flags[2:0];
   assign dma_cmd.dst_space = decoded.flags[5:3];
-  assign dma_cmd.src_addr = {16'd0, decoded.src0};
-  assign dma_cmd.dst_addr = {16'd0, decoded.dst};
+  // 32-bit DMA addresses: low 16 bits in src0/dst, high 16 bits in imm2/imm1.
+  assign dma_cmd.src_addr = {decoded.imm2, decoded.src0};
+  assign dma_cmd.dst_addr = {decoded.imm1, decoded.dst};
   assign dma_cmd.len_bytes = {16'd0, decoded.imm0};
 
   function automatic logic op_uses_dma(input vtpu_pkg::opcode_t opcode);

@@ -37,15 +37,32 @@ def test_systolic_array_cocotb() -> None:
 
 
 def test_mxu_top_cocotb() -> None:
-    run_unit("mxu_top", ["rtl/common/vtpu_pkg.sv", "rtl/mxu/mxu_top.sv"])
+    run_unit(
+        "mxu_top",
+        [
+            "rtl/common/vtpu_pkg.sv",
+            "rtl/primitive/fp32_mul.sv",
+            "rtl/primitive/fp32_add.sv",
+            "rtl/mxu/mxu_top.sv",
+        ],
+    )
+
+
+_FP = [
+    "rtl/primitive/fp32_mul.sv",
+    "rtl/primitive/fp32_add.sv",
+    "rtl/primitive/fp32_recip.sv",
+    "rtl/primitive/fp32_rsqrt.sv",
+    "rtl/primitive/fp32_exp.sv",
+]
 
 
 def test_vector_unit_cocotb() -> None:
-    run_unit("vector_unit", ["rtl/common/vtpu_pkg.sv", "rtl/vector/vector_unit.sv"])
+    run_unit("vector_unit", ["rtl/common/vtpu_pkg.sv"] + _FP + ["rtl/vector/vector_unit.sv"])
 
 
 def test_reduce_unit_cocotb() -> None:
-    run_unit("reduce_unit", ["rtl/common/vtpu_pkg.sv", "rtl/vector/reduce_unit.sv"])
+    run_unit("reduce_unit", ["rtl/common/vtpu_pkg.sv"] + _FP + ["rtl/vector/reduce_unit.sv"])
 
 
 def test_hbm_model_cocotb() -> None:
@@ -70,6 +87,11 @@ def test_tensor_core_cocotb() -> None:
         [
             "rtl/common/vtpu_pkg.sv",
             "rtl/memory/vmem_top.sv",
+            "rtl/primitive/fp32_mul.sv",
+            "rtl/primitive/fp32_add.sv",
+            "rtl/primitive/fp32_recip.sv",
+            "rtl/primitive/fp32_rsqrt.sv",
+            "rtl/primitive/fp32_exp.sv",
             "rtl/mxu/mxu_top.sv",
             "rtl/vector/vector_unit.sv",
             "rtl/vector/reduce_unit.sv",

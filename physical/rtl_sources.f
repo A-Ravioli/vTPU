@@ -1,8 +1,15 @@
 rtl/common/vtpu_pkg.sv
 rtl/common/perf_counters.sv
 rtl/primitive/pe_int8.sv
+rtl/primitive/fp32_mul.sv
+rtl/primitive/fp32_add.sv
+rtl/primitive/fp32_recip.sv
+rtl/primitive/fp32_rsqrt.sv
+rtl/primitive/fp32_exp.sv
+rtl/primitive/pe_bf16.sv
 rtl/memory/vmem_bank.sv
 rtl/mxu/systolic_array.sv
+rtl/mxu/systolic_array_bf16.sv
 rtl/mxu/mxu_top.sv
 rtl/vector/vector_unit.sv
 rtl/vector/reduce_unit.sv

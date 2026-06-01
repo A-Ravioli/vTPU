@@ -299,3 +299,29 @@ async def chip_reduce_datapath(dut):
     np.testing.assert_array_equal(rows, matrix.sum(axis=1))
     np.testing.assert_array_equal(cols, matrix.max(axis=0))
     assert await read_counter(dut, COUNTER_REDUCE_ACTIVE) > 0
+
+
+@cocotb.test()
+async def chip_high_address_dma_roundtrip(dut):
+    """DMA through HBM/VMEM byte offsets beyond the old 16-bit limit (32-bit addressing)."""
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
+    await reset(dut)
+    src_hbm = 0x0002_0000   # 128 KB into HBM (needs high address bits)
+    dst_hbm = 0x0004_0000   # 256 KB
+    vmem = 0x0001_0000      # 64 KB into VMEM
+    length = 256
+    program = [
+        dma_copy(dst=MemoryRef(AddressSpace.VMEM0, vmem), src=MemoryRef(AddressSpace.HBM, src_hbm), length=length),
+        barrier(UnitMask.DMA),
+        dma_copy(dst=MemoryRef(AddressSpace.HBM, dst_hbm), src=MemoryRef(AddressSpace.VMEM0, vmem), length=length),
+        barrier(UnitMask.DMA),
+        halt(),
+    ]
+    await load_program(dut, program)
+    payload = np.arange(length, dtype=np.uint8).tobytes()
+    await write_hbm_bytes(dut, src_hbm, payload)
+    status, error_code = await start_and_wait(dut)
+    assert status & 0b001, f"expected done, status={status:#x} error_code={error_code:#x}"
+    assert not (status & 0b100), f"unexpected error_code={error_code:#x}"
+    got = await read_hbm_bytes(dut, dst_hbm, length)
+    assert got == payload, "high-address DMA roundtrip mismatch"

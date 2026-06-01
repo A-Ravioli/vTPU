@@ -50,8 +50,32 @@ module reduce_unit #(
   assign status.error = (state_q == ST_ERROR);
   assign status.error_code = (state_q == ST_ERROR) ? error_code_q : vtpu_pkg::ERR_NONE;
 
+  // int row/col ops (2-5) plus fp row ops (9,10) need a column count and per-group output.
   function automatic logic row_col_op(input logic [7:0] op);
-    row_col_op = (op >= 8'd2) && (op <= 8'd5);
+    row_col_op = ((op >= 8'd2) && (op <= 8'd5)) || (op == 8'd9) || (op == 8'd10);
+  endfunction
+
+  // fp reductions: FSUM_ALL(6),FMAX_ALL(7),FSUMSQ_ALL(8),FSUM_ROWS(9),FMAX_ROWS(10)
+  function automatic logic op_is_fp(input logic [7:0] op);
+    op_is_fp = (op >= 8'd6) && (op <= 8'd10);
+  endfunction
+
+  // whole-buffer reductions accumulate into one scalar: SUM_ALL/MAX_ALL + FSUM/FMAX/FSUMSQ_ALL
+  function automatic logic is_all_op(input logic [7:0] op);
+    is_all_op = (op <= 8'd1) || ((op >= 8'd6) && (op <= 8'd8));
+  endfunction
+
+  // fp max ops (FMAX_ALL=7, FMAX_ROWS=10) reduce by maximum; others by sum
+  function automatic logic op_is_max(input logic [7:0] op);
+    op_is_max = (op == 8'd7) || (op == 8'd10);
+  endfunction
+
+  function automatic logic fp_gt(input logic [31:0] xv, input logic [31:0] yv);
+    begin
+      if (xv[31] != yv[31]) fp_gt = (yv[31] && !xv[31]);
+      else if (!xv[31])     fp_gt = (xv[30:0] > yv[30:0]);
+      else                  fp_gt = (xv[30:0] < yv[30:0]);
+    end
   endfunction
 
   function automatic logic [31:0] rows(input logic [15:0] length, input logic [15:0] columns);
@@ -59,9 +83,9 @@ module reduce_unit #(
   endfunction
 
   function automatic logic [31:0] output_length(input logic [7:0] op, input logic [15:0] length, input logic [15:0] columns);
-    if (op <= 8'd1) begin
+    if (is_all_op(op)) begin
       output_length = 32'd1;
-    end else if ((op == 8'd2) || (op == 8'd3)) begin
+    end else if ((op == 8'd2) || (op == 8'd3) || (op == 8'd9) || (op == 8'd10)) begin
       output_length = rows(length, columns);
     end else begin
       output_length = {16'd0, columns};
@@ -73,7 +97,7 @@ module reduce_unit #(
   endfunction
 
   function automatic logic shape_ok(input vtpu_pkg::reduce_cmd_t local_cmd);
-    shape_ok = (local_cmd.op <= 8'd5) &&
+    shape_ok = (local_cmd.op <= 8'd10) &&
                (local_cmd.length != 16'd0) &&
                (!row_col_op(local_cmd.op) ||
                 ((local_cmd.columns != 16'd0) &&
@@ -89,7 +113,7 @@ module reduce_unit #(
   endfunction
 
   function automatic logic first_in_group(input logic [7:0] op, input logic [31:0] idx, input logic [15:0] columns);
-    if ((op == 8'd2) || (op == 8'd3)) begin
+    if ((op == 8'd2) || (op == 8'd3) || (op == 8'd9) || (op == 8'd10)) begin
       first_in_group = (col_index(idx, columns) == 32'd0);
     end else if ((op == 8'd4) || (op == 8'd5)) begin
       first_in_group = (row_index(idx, columns) == 32'd0);
@@ -99,7 +123,7 @@ module reduce_unit #(
   endfunction
 
   function automatic logic [31:0] out_index(input logic [7:0] op, input logic [31:0] idx, input logic [15:0] columns);
-    if ((op == 8'd2) || (op == 8'd3)) begin
+    if ((op == 8'd2) || (op == 8'd3) || (op == 8'd9) || (op == 8'd10)) begin
       out_index = row_index(idx, columns);
     end else if ((op == 8'd4) || (op == 8'd5)) begin
       out_index = col_index(idx, columns);
@@ -119,6 +143,18 @@ module reduce_unit #(
       reduce_pair = prior + value;
     end
   endfunction
+
+  // ---- fp32 reduction datapath (combinational; valid in the relevant WAIT states) ----
+  logic [31:0] fp_val_raw, fp_sq, fp_addend, fp_prior, fp_sum, fp_combined, fp_init;
+  assign fp_val_raw = (state_q == ST_READ_VALUE_WAIT) ? vmem_resp.rdata : value_q;
+  assign fp_prior   = (state_q == ST_READ_PRIOR_WAIT) ? vmem_resp.rdata : acc_q;
+  fp32_mul u_sq  (.a(fp_val_raw), .b(fp_val_raw), .p(fp_sq));
+  assign fp_addend = (cmd_q.op == 8'd8) ? fp_sq : fp_val_raw;       // FSUMSQ squares the element
+  fp32_add u_sum (.a(fp_prior), .b(fp_addend), .s(fp_sum));
+  assign fp_combined = op_is_max(cmd_q.op)
+                       ? (fp_gt(fp_addend, fp_prior) ? fp_addend : fp_prior)
+                       : fp_sum;
+  assign fp_init = (cmd_q.op == 8'd8) ? fp_sq : fp_val_raw;          // first element seed
 
   task automatic clear_req;
     begin
@@ -195,17 +231,21 @@ module reduce_unit #(
               enter_error(vtpu_pkg::ERR_BAD_ADDR);
             end else begin
               value_q <= $signed(vmem_resp.rdata);
-              if (cmd_q.op <= 8'd1) begin
+              if (is_all_op(cmd_q.op)) begin
                 if (index_q == 32'd0) begin
-                  acc_q <= $signed(vmem_resp.rdata);
+                  acc_q <= op_is_fp(cmd_q.op) ? fp_init : $signed(vmem_resp.rdata);
                 end else begin
-                  acc_q <= reduce_pair(cmd_q.op, acc_q, $signed(vmem_resp.rdata));
+                  acc_q <= op_is_fp(cmd_q.op) ? fp_combined
+                                              : reduce_pair(cmd_q.op, acc_q, $signed(vmem_resp.rdata));
                 end
                 if (index_q == ({16'd0, cmd_q.length} - 32'd1)) begin
                   write_addr_q <= {16'd0, cmd_q.dst_addr};
-                  write_value_q <= (index_q == 32'd0) ?
-                                   $signed(vmem_resp.rdata) :
-                                   reduce_pair(cmd_q.op, acc_q, $signed(vmem_resp.rdata));
+                  if (index_q == 32'd0) begin
+                    write_value_q <= op_is_fp(cmd_q.op) ? fp_init : $signed(vmem_resp.rdata);
+                  end else begin
+                    write_value_q <= op_is_fp(cmd_q.op) ? fp_combined
+                                                        : reduce_pair(cmd_q.op, acc_q, $signed(vmem_resp.rdata));
+                  end
                   state_q <= ST_WRITE_REQ;
                 end else begin
                   index_q <= index_q + 32'd1;
@@ -239,7 +279,9 @@ module reduce_unit #(
             if (vmem_resp.error) begin
               enter_error(vtpu_pkg::ERR_BAD_ADDR);
             end else begin
-              write_value_q <= reduce_pair(cmd_q.op, $signed(vmem_resp.rdata), value_q);
+              write_value_q <= op_is_fp(cmd_q.op)
+                               ? fp_combined
+                               : reduce_pair(cmd_q.op, $signed(vmem_resp.rdata), value_q);
               state_q <= ST_WRITE_REQ;
             end
           end

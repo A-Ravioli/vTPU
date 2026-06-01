@@ -120,6 +120,14 @@ class MemorySystem:
         payload = self.read(space, addr, length * 4)
         return np.frombuffer(payload, dtype=np.int32).copy()
 
+    def write_f32_vector(self, space: AddressSpace | int, addr: int, vector: np.ndarray) -> None:
+        array = np.asarray(vector, dtype=np.float32, order="C")
+        self.write(space, addr, array.tobytes(order="C"))
+
+    def read_f32_vector(self, space: AddressSpace | int, addr: int, length: int) -> np.ndarray:
+        payload = self.read(space, addr, length * 4)
+        return np.frombuffer(payload, dtype=np.float32).copy()
+
     def write_u16_matrix(self, space: AddressSpace | int, addr: int, matrix: np.ndarray) -> None:
         """store bf16 tiles as raw uint16 (hardware bit pattern)."""
         array = np.asarray(matrix, dtype=np.uint16, order="C")

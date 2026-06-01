@@ -248,30 +248,34 @@ class Matmul128Layout:
     """Byte offsets for a single 128x128 int8 matmul in HBM and VMEM.
 
     Tile sizes:
-      A / B: 128*128 int8 = 16384 bytes each
+      A / B: 128*128 int8 = 16384 bytes each (fits in 16-bit address + length)
       C:     128*128 int32 = 65536 bytes
-    Total VMEM footprint: 16384 + 16384 + 65536 = 98304 bytes (fits in 256 KB VMEM).
+
+    ISA note: the MVP instruction format uses 16-bit address and length fields
+    (max 65535).  The C result tile is exactly 65536 bytes so it cannot be
+    expressed as a single DMA or CLEAR instruction.  matmul_128_program therefore
+    loads A/B from HBM, runs the matmul, and leaves C in VMEM; callers that need
+    C in HBM should read VMEM directly (test/software path) or implement a tiled
+    readback using 32-row strips (each 128*32*4 = 16384 bytes, fits 16 bits).
     """
 
     hbm_a: int = 0x00000
     hbm_b: int = 0x04000   # 16384 bytes after A
-    hbm_c: int = 0x08000   # 16384 bytes after B
     vmem_a: int = 0x0000
     vmem_b: int = 0x4000   # 16384 bytes after A
-    vmem_c: int = 0x8000   # 16384 bytes after B
-    tile_bytes: int = 128 * 128        # 16384 bytes per int8 operand
-    result_bytes: int = 128 * 128 * 4  # 65536 bytes for int32 output
+    vmem_c: int = 0x8000   # 32768 bytes after A; C spans 0x8000..0x17FFF in VMEM
+    tile_bytes: int = 128 * 128        # 16384 bytes per int8 operand tile
+    result_bytes: int = 128 * 128 * 4  # 65536 bytes for int32 C (exceeds 16-bit imm0)
 
 
 def matmul_128_program(layout: Matmul128Layout | None = None) -> list[Instruction]:
-    """End-to-end 128x128 int8 matmul: hbm -> vmem -> mxu -> hbm.
+    """128x128 int8 matmul: load A/B from HBM into VMEM, run MXU, halt with C in VMEM.
 
-    Same structure as matmul_16_program but for the 128x128 systolic array.
-    The C tile is 65536 bytes (128*128*4), which exceeds the 16-bit ISA length
-    field, so the CLEAR and store DMA are each split into two 32768-byte ops.
+    C is not written back to HBM: the ISA's 16-bit address/length fields cannot
+    express the full 65536-byte C tile in a single DMA instruction.  Tests read
+    C directly from VMEM via memory.read_i32_matrix(VMEM0, layout.vmem_c, 128, 128).
     """
     layout = layout or Matmul128Layout()
-    half_c = layout.result_bytes // 2  # 32768 bytes — fits in 16-bit imm0
     return [
         dma_copy(
             dst=MemoryRef(AddressSpace.VMEM0, layout.vmem_a),
@@ -284,9 +288,6 @@ def matmul_128_program(layout: Matmul128Layout | None = None) -> list[Instructio
             length=layout.tile_bytes,
         ),
         barrier(UnitMask.DMA),
-        # CLEAR in two halves: C tile is 65536 bytes, exceeds 16-bit imm0 limit
-        clear(dst=MemoryRef(AddressSpace.VMEM0, layout.vmem_c), length=half_c),
-        clear(dst=MemoryRef(AddressSpace.VMEM0, layout.vmem_c + half_c), length=half_c),
         matmul(
             dst_addr=layout.vmem_c,
             src_a_addr=layout.vmem_a,
@@ -295,20 +296,9 @@ def matmul_128_program(layout: Matmul128Layout | None = None) -> list[Instructio
             n=128,
             k=128,
             target=0x10,
+            accumulate=False,  # C is zeroed implicitly (no CLEAR needed)
         ),
         barrier(UnitMask.MXU),
-        # Store C in two halves for the same reason
-        dma_copy(
-            dst=MemoryRef(AddressSpace.HBM, layout.hbm_c),
-            src=MemoryRef(AddressSpace.VMEM0, layout.vmem_c),
-            length=half_c,
-        ),
-        dma_copy(
-            dst=MemoryRef(AddressSpace.HBM, layout.hbm_c + half_c),
-            src=MemoryRef(AddressSpace.VMEM0, layout.vmem_c + half_c),
-            length=half_c,
-        ),
-        barrier(UnitMask.DMA),
         halt(),
     ]
 

@@ -57,8 +57,9 @@ def pack_dma_cmd(src_space: int, dst_space: int, src_addr: int, dst_addr: int, l
     return ((src_space & 0x7) << 99) | ((dst_space & 0x7) << 96) | ((src_addr & 0xFFFFFFFF) << 64) | ((dst_addr & 0xFFFFFFFF) << 32) | (length & 0xFFFFFFFF)
 
 
-def pack_mxu_cmd(dst: int, a: int, b: int, m: int, n: int, k: int, accumulate: int = 0, bf16: int = 0) -> int:
-    return ((dst & 0xFFFF) << 82) | ((a & 0xFFFF) << 66) | ((b & 0xFFFF) << 50) | ((m & 0xFFFF) << 34) | ((n & 0xFFFF) << 18) | ((k & 0xFFFF) << 2) | ((accumulate & 1) << 1) | (bf16 & 1)
+def pack_mxu_cmd(dst: int, a: int, b: int, m: int, n: int, k: int, accumulate: int = 0, bf16: int = 0, transpose_b: int = 0) -> int:
+    # mxu_cmd_t: dst,a,b,m,n,k (16b each), accumulate, bf16, transpose_b (LSB)
+    return ((dst & 0xFFFF) << 83) | ((a & 0xFFFF) << 67) | ((b & 0xFFFF) << 51) | ((m & 0xFFFF) << 35) | ((n & 0xFFFF) << 19) | ((k & 0xFFFF) << 3) | ((accumulate & 1) << 2) | ((bf16 & 1) << 1) | (transpose_b & 1)
 
 
 def pack_vector_cmd(dst: int, src0: int, src1: int, length: int, op: int, imm: int = 0) -> int:
@@ -95,6 +96,12 @@ def f32_from_word(value: int) -> float:
     import struct
 
     return struct.unpack("<f", int(value).to_bytes(4, byteorder="little", signed=False))[0]
+
+
+def word_from_f32(value: float) -> int:
+    import struct
+
+    return int.from_bytes(struct.pack("<f", float(value)), byteorder="little", signed=False)
 
 
 async def reset_clocked(dut) -> None:
@@ -409,3 +416,130 @@ async def tensor_core_multi_mxu_smoke(dut):
         if saw_parallel and not ((int(dut.status.value) >> 10) & 1):
             break
     assert saw_parallel
+
+
+@cocotb.test()
+async def vector_unit_fp_ops(dut):
+    if top_name(dut) != "vector_unit":
+        return
+    import numpy as np
+    await reset_clocked(dut)
+    n = 4
+    a = np.array([-2.0, 0.5, 3.25, 1.0], dtype=np.float32)
+    b = np.array([1.5, -4.0, 0.75, 2.0], dtype=np.float32)
+    memory = {}
+    for i in range(n):
+        memory[0 + i * 4] = word_from_f32(a[i])
+        memory[32 + i * 4] = word_from_f32(b[i])
+    memory[64] = word_from_f32(3.0)  # broadcast scalar
+    dut.vmem_resp.value = pack_vmem_resp(1, 0)
+    cocotb.start_soon(run_vmem_responder(dut, dut.vmem_req, dut.vmem_resp, memory))
+    await Timer(1, unit="ps")
+
+    FADD, FMUL, FEXP, FSILU, FSCALE = 6, 7, 9, 13, 14
+    # FADD -> 0x80, FMUL -> 0xC0, FEXP(a) -> 0x100, FSILU(a) -> 0x140, FSCALE a*3 -> 0x180
+    await issue_cmd(dut, pack_vector_cmd(dst=0x80, src0=0, src1=32, length=n, op=FADD)); await wait_done_status(dut)
+    await issue_cmd(dut, pack_vector_cmd(dst=0xC0, src0=0, src1=32, length=n, op=FMUL)); await wait_done_status(dut)
+    await issue_cmd(dut, pack_vector_cmd(dst=0x100, src0=0, src1=0, length=n, op=FEXP)); await wait_done_status(dut)
+    await issue_cmd(dut, pack_vector_cmd(dst=0x140, src0=0, src1=0, length=n, op=FSILU)); await wait_done_status(dut)
+    await issue_cmd(dut, pack_vector_cmd(dst=0x180, src0=0, src1=64, length=n, op=FSCALE)); await wait_done_status(dut)
+
+    def rd(base):
+        return np.array([f32_from_word(memory[base + i * 4]) for i in range(n)], dtype=np.float32)
+
+    np.testing.assert_allclose(rd(0x80), a + b, rtol=2e-3, atol=1e-5)
+    np.testing.assert_allclose(rd(0xC0), a * b, rtol=2e-3, atol=1e-5)
+    np.testing.assert_allclose(rd(0x100), np.exp(a), rtol=2e-3, atol=1e-4)
+    sig = 1.0 / (1.0 + np.exp(-a))
+    np.testing.assert_allclose(rd(0x140), a * sig, rtol=2e-3, atol=1e-4)
+    np.testing.assert_allclose(rd(0x180), a * np.float32(3.0), rtol=2e-3, atol=1e-5)
+
+
+@cocotb.test()
+async def reduce_unit_fp_ops(dut):
+    if top_name(dut) != "reduce_unit":
+        return
+    import numpy as np
+    await reset_clocked(dut)
+    n = 8
+    x = np.array([1.0, -2.0, 0.5, 3.0, -1.5, 2.25, 0.75, -0.5], dtype=np.float32)
+    memory = {i * 4: word_from_f32(x[i]) for i in range(n)}
+    dut.vmem_resp.value = pack_vmem_resp(1, 0)
+    cocotb.start_soon(run_vmem_responder(dut, dut.vmem_req, dut.vmem_resp, memory))
+    await Timer(1, unit="ps")
+
+    FSUM_ALL, FMAX_ALL, FSUMSQ_ALL, FMAX_ROWS = 6, 7, 8, 10
+    await issue_cmd(dut, pack_reduce_cmd(dst=0x100, src=0, length=n, op=FSUM_ALL)); await wait_done_status(dut)
+    await issue_cmd(dut, pack_reduce_cmd(dst=0x104, src=0, length=n, op=FMAX_ALL)); await wait_done_status(dut)
+    await issue_cmd(dut, pack_reduce_cmd(dst=0x108, src=0, length=n, op=FSUMSQ_ALL)); await wait_done_status(dut)
+    # rows: 2 rows x 4 cols, per-row max -> 2 outputs at 0x200
+    await issue_cmd(dut, pack_reduce_cmd(dst=0x200, src=0, length=n, op=FMAX_ROWS, columns=4)); await wait_done_status(dut)
+
+    assert abs(f32_from_word(memory[0x100]) - float(x.sum())) < 2e-3
+    assert abs(f32_from_word(memory[0x104]) - float(x.max())) < 1e-6
+    assert abs(f32_from_word(memory[0x108]) - float((x * x).sum())) < 2e-2
+    rowmax = x.reshape(2, 4).max(axis=1)
+    assert abs(f32_from_word(memory[0x200]) - float(rowmax[0])) < 1e-6
+    assert abs(f32_from_word(memory[0x204]) - float(rowmax[1])) < 1e-6
+
+
+@cocotb.test()
+async def mxu_top_transpose_b(dut):
+    if top_name(dut) != "mxu_top":
+        return
+    import numpy as np
+    await reset_clocked(dut)
+    # A is 2x3, B stored as B^T (n=2 rows, k=3 cols). C = A @ B^T -> 2x2
+    a = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.int8)
+    bt = np.array([[1, 0, -1], [2, 1, 0]], dtype=np.int8)  # stored [n=2][k=3]
+    memory = {}
+    # pack A row-major int8 (k=3 per row), 4 per word
+    a_bytes = a.reshape(-1)
+    for i, v in enumerate(a_bytes):
+        word = i // 4
+        memory.setdefault(word * 4, 0)
+        memory[word * 4] |= (int(v) & 0xFF) << ((i % 4) * 8)
+    bt_bytes = bt.reshape(-1)
+    base_b = 64
+    for i, v in enumerate(bt_bytes):
+        word = i // 4
+        addr = base_b + word * 4
+        memory.setdefault(addr, 0)
+        memory[addr] |= (int(v) & 0xFF) << ((i % 4) * 8)
+    dut.vmem_resp.value = pack_vmem_resp(1, 0)
+    cocotb.start_soon(run_vmem_responder(dut, dut.vmem_req, dut.vmem_resp, memory))
+    await Timer(1, unit="ps")
+    await issue_cmd(dut, pack_mxu_cmd(dst=128, a=0, b=base_b, m=2, n=2, k=3, transpose_b=1))
+    await wait_done_status(dut)
+    want = (a.astype(np.int32) @ bt.T.astype(np.int32)).reshape(-1)
+    got = [int(memory[128 + i * 4]) for i in range(4)]
+    got = [g - (1 << 32) if g >= (1 << 31) else g for g in got]
+    assert got == list(want), f"got {got} want {list(want)}"
+
+
+@cocotb.test()
+async def vector_unit_fquant_bf16(dut):
+    if top_name(dut) != "vector_unit":
+        return
+    import numpy as np
+    await reset_clocked(dut)
+    n = 6  # fp32 inputs -> 3 packed bf16 words
+    vals = np.array([1.0, -2.5, 0.333, 100.0, -0.01, 7.5], dtype=np.float32)
+    memory = {i * 4: word_from_f32(vals[i]) for i in range(n)}
+    dut.vmem_resp.value = pack_vmem_resp(1, 0)
+    cocotb.start_soon(run_vmem_responder(dut, dut.vmem_req, dut.vmem_resp, memory))
+    await Timer(1, unit="ps")
+    FQUANT = 15
+    await issue_cmd(dut, pack_vector_cmd(dst=0x100, src0=0, src1=0, length=n, op=FQUANT))
+    await wait_done_status(dut)
+
+    def f2bf(x):
+        b = np.float32(x).view(np.uint32)
+        bias = np.uint32(0x7FFF) + ((b >> np.uint32(16)) & np.uint32(1))
+        return int(((b + bias) >> np.uint32(16)) & np.uint16(0xFFFF))
+
+    for w in range(n // 2):
+        lo = f2bf(vals[2 * w])
+        hi = f2bf(vals[2 * w + 1])
+        expected = lo | (hi << 16)
+        assert memory[0x100 + w * 4] == expected, f"word {w}: {memory[0x100+w*4]:#x} != {expected:#x}"
