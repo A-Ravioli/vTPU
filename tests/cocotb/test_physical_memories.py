@@ -82,6 +82,34 @@ async def vmem_physical_read_write_strobes_and_conflicts(dut):
 
 
 @cocotb.test()
+async def vmem_physical_default_capacity_does_not_alias_64_rows(dut):
+    if not hasattr(dut, "req_mxu"):
+        return
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
+    await reset(dut)
+
+    high_same_bank_addr = 64 * 16 * 4
+    dut.req_dma.value = pack_vmem_req(1, 1, 0x0000, 0x11111111, 0xF)
+    await accepted_response()
+    dut.req_dma.value = pack_vmem_req(1, 1, high_same_bank_addr, 0x22222222, 0xF)
+    await accepted_response()
+    dut.req_dma.value = 0
+    await accepted_response()
+
+    dut.req_mxu[0].value = pack_vmem_req(1, 0, 0x0000)
+    await accepted_response()
+    dut.req_mxu[0].value = 0
+    await accepted_response()
+    assert unpack_vmem_resp(int(dut.resp_mxu[0].value))[2] == 0x11111111
+
+    dut.req_mxu[0].value = pack_vmem_req(1, 0, high_same_bank_addr)
+    await accepted_response()
+    dut.req_mxu[0].value = 0
+    await accepted_response()
+    assert unpack_vmem_resp(int(dut.resp_mxu[0].value))[2] == 0x22222222
+
+
+@cocotb.test()
 async def cmem_physical_read_write_and_conflicts(dut):
     if not hasattr(dut, "req_tc0"):
         return
@@ -109,6 +137,34 @@ async def cmem_physical_read_write_and_conflicts(dut):
     await Timer(1, unit="ps")
     assert unpack_vmem_resp(int(dut.resp_tc0.value))[0] == 1
     assert unpack_vmem_resp(int(dut.resp_dma.value))[0] == 0
+
+
+@cocotb.test()
+async def cmem_physical_default_capacity_does_not_alias_64_rows(dut):
+    if not hasattr(dut, "req_tc0"):
+        return
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
+    await reset(dut)
+
+    high_same_bank_addr = 64 * 16 * 4
+    dut.req_dma.value = pack_vmem_req(1, 1, 0x0000, 0x33333333, 0xF)
+    await accepted_response()
+    dut.req_dma.value = pack_vmem_req(1, 1, high_same_bank_addr, 0x44444444, 0xF)
+    await accepted_response()
+    dut.req_dma.value = 0
+    await accepted_response()
+
+    dut.req_tc0.value = pack_vmem_req(1, 0, 0x0000)
+    await accepted_response()
+    dut.req_tc0.value = 0
+    await accepted_response()
+    assert unpack_vmem_resp(int(dut.resp_tc0.value))[2] == 0x33333333
+
+    dut.req_tc0.value = pack_vmem_req(1, 0, high_same_bank_addr)
+    await accepted_response()
+    dut.req_tc0.value = 0
+    await accepted_response()
+    assert unpack_vmem_resp(int(dut.resp_tc0.value))[2] == 0x44444444
 
 
 @cocotb.test()
@@ -142,4 +198,44 @@ async def instr_mem_physical_host_lanes_fetch_128b(dut):
     await Timer(1, unit="ps")
     expected = (words[3] << 96) | (words[2] << 64) | (words[1] << 32) | words[0]
     assert int(dut.instr.value) == expected
+    assert int(dut.fetch_error.value) == 0
+
+
+@cocotb.test()
+async def instr_mem_physical_default_depth_does_not_alias_64_rows(dut):
+    if not hasattr(dut, "host_lane"):
+        return
+    cocotb.start_soon(Clock(dut.clk, 10, unit="ns").start())
+    dut.rst_n.value = 0
+    dut.host_we.value = 0
+    dut.host_addr.value = 0
+    dut.host_lane.value = 0
+    dut.host_wdata.value = 0
+    dut.fetch_en.value = 0
+    dut.fetch_pc.value = 0
+    await RisingEdge(dut.clk)
+    await RisingEdge(dut.clk)
+    dut.rst_n.value = 1
+
+    for addr, base in ((0, 0x10000000), (64, 0x20000000)):
+        for lane in range(4):
+            dut.host_we.value = 1
+            dut.host_addr.value = addr
+            dut.host_lane.value = lane
+            dut.host_wdata.value = base + lane
+            await RisingEdge(dut.clk)
+    dut.host_we.value = 0
+
+    dut.fetch_en.value = 1
+    dut.fetch_pc.value = 0
+    await RisingEdge(dut.clk)
+    await Timer(1, unit="ps")
+    expected_low = (0x10000003 << 96) | (0x10000002 << 64) | (0x10000001 << 32) | 0x10000000
+    assert int(dut.instr.value) == expected_low
+
+    dut.fetch_pc.value = 64
+    await RisingEdge(dut.clk)
+    await Timer(1, unit="ps")
+    expected_high = (0x20000003 << 96) | (0x20000002 << 64) | (0x20000001 << 32) | 0x20000000
+    assert int(dut.instr.value) == expected_high
     assert int(dut.fetch_error.value) == 0

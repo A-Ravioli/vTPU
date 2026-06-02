@@ -26,3 +26,4 @@ rtl/physical/physical_memories.sv
 rtl/physical/vtpu_pd_tiny_top.sv
 rtl/physical/vtpu_pd_smoke_top.sv
 rtl/physical/vtpu_pd_mxu_gds_top.sv
+rtl/physical/vtpu_pd_full_top.sv

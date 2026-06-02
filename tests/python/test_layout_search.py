@@ -1,6 +1,6 @@
 import json
 
-from virtual_tpu.layout import anneal, score_floorplan, tiny_floorplan
+from virtual_tpu.layout import anneal, full_floorplan, score_floorplan, tiny_floorplan
 from virtual_tpu.layout.search import emit_openroad_fragment, random_search
 
 
@@ -34,3 +34,13 @@ def test_openroad_fragment_contains_physical_knobs() -> None:
     assert "export DIE_AREA = 0 0 2200 2200" in fragment
     assert "export CORE_AREA = 100 100 2100 2100" in fragment
     assert "# tc0_vmem sram" in fragment
+
+
+def test_full_floorplan_matches_default_physical_target() -> None:
+    floorplan = full_floorplan()
+    assert floorplan.design.name == "vtpu_pd_full"
+    assert floorplan.design.array_m == 16
+    assert floorplan.design.vmem_bytes == 262144
+    assert floorplan.design.cmem_bytes == 524288
+    assert floorplan.overlaps() == []
+    assert floorplan.out_of_bounds() == []

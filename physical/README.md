@@ -102,6 +102,52 @@ The timing constraints live at:
 physical/openroad/designs/sky130hd/vtpu_pd_tiny/constraint.sdc
 ```
 
+## Run The Default Full-Chip Target
+
+`vtpu_pd_full_top` wraps the default educational vTPU scale for a Sky130 HD
+physical-design attempt:
+
+- 2 TensorCores
+- 4 MXUs per TensorCore
+- 16x16 systolic arrays
+- 256 KiB VMEM per TensorCore
+- 512 KiB CMEM
+- 1024 instruction words
+- physical SRAM macro adapters enabled
+
+The full target uses the same ORFS Docker setup:
+
+```sh
+export OPENROAD_FLOW_ROOT=/Users/arav/Desktop/Coding/OpenROAD-flow-scripts/flow
+make physical-full-lint
+make physical-full-synth-check-docker
+make physical-full-openroad-floorplan-docker
+make physical-full-openroad-docker
+```
+
+The config lives at:
+
+```text
+physical/openroad/designs/sky130hd/vtpu_pd_full/config.mk
+```
+
+The macro placement script deterministically places the default memory macro
+tiles:
+
+```text
+physical/openroad/designs/sky130hd/vtpu_pd_full/macro_placement.tcl
+```
+
+This first full-chip target is intentionally oversized and relaxed. The default
+memories expand to thousands of Sky130 SRAM macro instances, so initial success
+means elaborating, floorplanning, and producing a routed GDS; density and clock
+tightening are later iterations.
+
+HBM is not implemented as a 1 MiB on-chip SRAM array in the physical target.
+The `PHYSICAL_MEMORIES` path uses a physical-safe latency shell so the first GDS
+does not synthesize a large behavioral memory. A real off-chip memory PHY or
+pad-level request/response interface is a future integration step.
+
 ## Expected First Failures
 
 The first hardening attempts may fail in synthesis or placement because this RTL

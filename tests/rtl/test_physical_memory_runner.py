@@ -21,6 +21,7 @@ def test_vmem_top_physical_cocotb() -> None:
         hdl_toplevel="vmem_top_physical",
         test_module="test_physical_memories",
         build_dir=REPO / "sim_build/vmem_top_physical",
+        test_dir=REPO / "tests/cocotb",
         waves=True,
     )
 
@@ -39,6 +40,7 @@ def test_cmem_top_physical_cocotb() -> None:
         hdl_toplevel="cmem_top_physical",
         test_module="test_physical_memories",
         build_dir=REPO / "sim_build/cmem_top_physical",
+        test_dir=REPO / "tests/cocotb",
         waves=True,
     )
 
@@ -57,5 +59,6 @@ def test_instr_mem_physical_cocotb() -> None:
         hdl_toplevel="instr_mem_physical",
         test_module="test_physical_memories",
         build_dir=REPO / "sim_build/instr_mem_physical",
+        test_dir=REPO / "tests/cocotb",
         waves=True,
     )

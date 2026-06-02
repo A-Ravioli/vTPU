@@ -25,36 +25,51 @@ endmodule
 /* verilator lint_on UNDRIVEN */
 `endif
 
-module vtpu_sram_1rw_32x64 (
+module vtpu_sram_1rw_32x64 #(
+  parameter int WORDS = 64
+)(
   input  logic clk,
   input  logic en,
   input  logic write,
-  input  logic [5:0] addr,
+  input  logic [((WORDS <= 1) ? 1 : $clog2(WORDS))-1:0] addr,
   input  logic [31:0] wdata,
   input  logic [3:0] wstrb,
   output logic [31:0] rdata
 );
+  localparam int MACRO_ROWS = 64;
+  localparam int MACRO_TILES = (WORDS + MACRO_ROWS - 1) / MACRO_ROWS;
+  localparam int TILE_W = (MACRO_TILES <= 1) ? 1 : $clog2(MACRO_TILES);
+
 `ifdef VTPU_PHYSICAL_SRAM_MACROS
-  logic [79:0] macro_dout0;
-  logic [79:0] macro_dout1;
+  logic [79:0] macro_dout0 [MACRO_TILES];
+  logic [79:0] macro_dout1 [MACRO_TILES];
+  logic [TILE_W-1:0] tile_idx;
+  logic [5:0] row_addr;
 
-  sky130_sram_1rw1r_80x64_8 u_macro (
-    .clk0(clk),
-    .csb0(!en),
-    .web0(!write),
-    .wmask0({6'b0, wstrb}),
-    .addr0(addr),
-    .din0({48'd0, wdata}),
-    .dout0(macro_dout0),
-    .clk1(clk),
-    .csb1(1'b1),
-    .addr1(6'd0),
-    .dout1(macro_dout1)
-  );
+  assign tile_idx = TILE_W'(addr >> 6);
+  assign row_addr = 6'(addr);
+  assign rdata = macro_dout0[tile_idx][31:0];
 
-  assign rdata = macro_dout0[31:0];
+  genvar macro_tile_g;
+  generate
+    for (macro_tile_g = 0; macro_tile_g < MACRO_TILES; macro_tile_g++) begin : gen_macro_tiles
+      sky130_sram_1rw1r_80x64_8 u_macro (
+        .clk0(clk),
+        .csb0(!(en && (tile_idx == TILE_W'(macro_tile_g)))),
+        .web0(!write),
+        .wmask0({6'b0, wstrb}),
+        .addr0(row_addr),
+        .din0({48'd0, wdata}),
+        .dout0(macro_dout0[macro_tile_g]),
+        .clk1(clk),
+        .csb1(1'b1),
+        .addr1(6'd0),
+        .dout1(macro_dout1[macro_tile_g])
+      );
+    end
+  endgenerate
 `else
-  logic [31:0] mem [0:63];
+  logic [31:0] mem [0:WORDS-1];
   logic [31:0] rdata_q;
 
   assign rdata = rdata_q;
@@ -75,36 +90,51 @@ module vtpu_sram_1rw_32x64 (
 `endif
 endmodule
 
-module vtpu_sram_1rw_64x64 (
+module vtpu_sram_1rw_64x64 #(
+  parameter int WORDS = 64
+)(
   input  logic clk,
   input  logic en,
   input  logic write,
-  input  logic [5:0] addr,
+  input  logic [((WORDS <= 1) ? 1 : $clog2(WORDS))-1:0] addr,
   input  logic [63:0] wdata,
   input  logic [7:0] wstrb,
   output logic [63:0] rdata
 );
+  localparam int MACRO_ROWS = 64;
+  localparam int MACRO_TILES = (WORDS + MACRO_ROWS - 1) / MACRO_ROWS;
+  localparam int TILE_W = (MACRO_TILES <= 1) ? 1 : $clog2(MACRO_TILES);
+
 `ifdef VTPU_PHYSICAL_SRAM_MACROS
-  logic [79:0] macro_dout0;
-  logic [79:0] macro_dout1;
+  logic [79:0] macro_dout0 [MACRO_TILES];
+  logic [79:0] macro_dout1 [MACRO_TILES];
+  logic [TILE_W-1:0] tile_idx;
+  logic [5:0] row_addr;
 
-  sky130_sram_1rw1r_80x64_8 u_macro (
-    .clk0(clk),
-    .csb0(!en),
-    .web0(!write),
-    .wmask0({2'b0, wstrb}),
-    .addr0(addr),
-    .din0({16'd0, wdata}),
-    .dout0(macro_dout0),
-    .clk1(clk),
-    .csb1(1'b1),
-    .addr1(6'd0),
-    .dout1(macro_dout1)
-  );
+  assign tile_idx = TILE_W'(addr >> 6);
+  assign row_addr = 6'(addr);
+  assign rdata = macro_dout0[tile_idx][63:0];
 
-  assign rdata = macro_dout0[63:0];
+  genvar macro_tile_g;
+  generate
+    for (macro_tile_g = 0; macro_tile_g < MACRO_TILES; macro_tile_g++) begin : gen_macro_tiles
+      sky130_sram_1rw1r_80x64_8 u_macro (
+        .clk0(clk),
+        .csb0(!(en && (tile_idx == TILE_W'(macro_tile_g)))),
+        .web0(!write),
+        .wmask0({2'b0, wstrb}),
+        .addr0(row_addr),
+        .din0({16'd0, wdata}),
+        .dout0(macro_dout0[macro_tile_g]),
+        .clk1(clk),
+        .csb1(1'b1),
+        .addr1(6'd0),
+        .dout1(macro_dout1[macro_tile_g])
+      );
+    end
+  endgenerate
 `else
-  logic [63:0] mem [0:63];
+  logic [63:0] mem [0:WORDS-1];
   logic [63:0] rdata_q;
 
   assign rdata = rdata_q;
@@ -152,8 +182,8 @@ module instr_mem_physical #(
   logic upper_en;
   logic lower_write;
   logic upper_write;
-  logic [5:0] lower_addr;
-  logic [5:0] upper_addr;
+  logic [ADDR_W-1:0] lower_addr;
+  logic [ADDR_W-1:0] upper_addr;
   logic [63:0] lower_wdata;
   logic [63:0] upper_wdata;
   logic [7:0] lower_wstrb;
@@ -161,32 +191,32 @@ module instr_mem_physical #(
   logic [63:0] lower_rdata;
   logic [63:0] upper_rdata;
   logic [31:0] host_rdata_q;
-  logic [5:0] host_addr6;
-  logic [5:0] fetch_addr6;
   logic [31:0] fetch_pc_u;
+  logic [ADDR_W:0] host_shadow_index;
 `ifndef VTPU_PHYSICAL_SRAM_MACROS
-  logic [31:0] lower_shadow [0:127];
-  logic [31:0] upper_shadow [0:127];
+  logic [31:0] lower_shadow [0:(DEPTH*2)-1];
+  logic [31:0] upper_shadow [0:(DEPTH*2)-1];
 `endif
 
-  assign host_addr6 = 6'(host_addr);
-  assign fetch_addr6 = 6'(fetch_pc);
   assign fetch_pc_u = 32'(fetch_pc);
+  assign host_shadow_index = {host_addr, host_lane[0]};
   assign lower_en = host_we ? (host_lane[1] == 1'b0) : fetch_en;
   assign upper_en = host_we ? (host_lane[1] == 1'b1) : fetch_en;
   assign lower_write = host_we && (host_lane[1] == 1'b0);
   assign upper_write = host_we && (host_lane[1] == 1'b1);
-  assign lower_addr = host_we ? host_addr6 : fetch_addr6;
-  assign upper_addr = host_we ? host_addr6 : fetch_addr6;
+  assign lower_addr = host_we ? host_addr : fetch_pc;
+  assign upper_addr = host_we ? host_addr : fetch_pc;
   assign lower_wdata = host_lane[0] ? {host_wdata, 32'd0} : {32'd0, host_wdata};
   assign upper_wdata = host_lane[0] ? {host_wdata, 32'd0} : {32'd0, host_wdata};
   assign lower_wstrb = host_lane[0] ? 8'hF0 : 8'h0F;
   assign upper_wstrb = host_lane[0] ? 8'hF0 : 8'h0F;
   assign host_rdata = host_rdata_q;
   assign instr = {upper_rdata, lower_rdata};
-  assign fetch_error = fetch_en && ((fetch_pc_u >= DEPTH) || (fetch_pc_u >= 32'd64));
+  assign fetch_error = fetch_en && (fetch_pc_u >= DEPTH);
 
-  vtpu_sram_1rw_64x64 u_instr_lower (
+  vtpu_sram_1rw_64x64 #(
+    .WORDS(DEPTH)
+  ) u_instr_lower (
     .clk(clk),
     .en(lower_en),
     .write(lower_write),
@@ -196,7 +226,9 @@ module instr_mem_physical #(
     .rdata(lower_rdata)
   );
 
-  vtpu_sram_1rw_64x64 u_instr_upper (
+  vtpu_sram_1rw_64x64 #(
+    .WORDS(DEPTH)
+  ) u_instr_upper (
     .clk(clk),
     .en(upper_en),
     .write(upper_write),
@@ -213,14 +245,14 @@ module instr_mem_physical #(
 `ifndef VTPU_PHYSICAL_SRAM_MACROS
       if (host_we) begin
         if (host_lane[1]) begin
-          upper_shadow[{host_addr6, host_lane[0]}] <= host_wdata;
+          upper_shadow[host_shadow_index] <= host_wdata;
         end else begin
-          lower_shadow[{host_addr6, host_lane[0]}] <= host_wdata;
+          lower_shadow[host_shadow_index] <= host_wdata;
         end
       end
 
-      host_rdata_q <= host_lane[1] ? upper_shadow[{host_addr6, host_lane[0]}] :
-                                    lower_shadow[{host_addr6, host_lane[0]}];
+      host_rdata_q <= host_lane[1] ? upper_shadow[host_shadow_index] :
+                                    lower_shadow[host_shadow_index];
 `else
       host_rdata_q <= 32'd0;
 `endif
@@ -328,6 +360,7 @@ module cmem_top_physical #(
   localparam int WORDS = CMEM_BYTES / WORD_BYTES;
   localparam int BANK_W = (BANKS <= 1) ? 1 : $clog2(BANKS);
   localparam int BANK_WORDS = (WORDS + BANKS - 1) / BANKS;
+  localparam int BANK_ADDR_W = (BANK_WORDS <= 1) ? 1 : $clog2(BANK_WORDS);
 
   vtpu_pkg::vmem_resp_t resp_dma_q;
   vtpu_pkg::vmem_resp_t resp_tc0_q;
@@ -347,7 +380,7 @@ module cmem_top_physical #(
   logic [BANK_W-1:0] bank_tc1;
   logic [BANKS-1:0] bank_en;
   logic [BANKS-1:0] bank_write;
-  logic [5:0] bank_addr [BANKS];
+  logic [BANK_ADDR_W-1:0] bank_addr [BANKS];
   logic [31:0] bank_wdata [BANKS];
   logic [3:0] bank_wstrb [BANKS];
   logic [31:0] bank_rdata [BANKS];
@@ -377,11 +410,11 @@ module cmem_top_physical #(
     end
   endfunction
 
-  function automatic logic [5:0] macro_addr(input vtpu_pkg::vmem_req_t port_req);
+  function automatic logic [BANK_ADDR_W-1:0] macro_addr(input vtpu_pkg::vmem_req_t port_req);
     logic [31:0] word_addr;
     begin
       word_addr = port_req.addr / WORD_BYTES;
-      macro_addr = 6'((word_addr / BANKS) % 64);
+      macro_addr = BANK_ADDR_W'(word_addr / BANKS);
     end
   endfunction
 
@@ -409,7 +442,7 @@ module cmem_top_physical #(
     for (comb_idx = 0; comb_idx < BANKS; comb_idx++) begin
       bank_en[comb_idx] = 1'b0;
       bank_write[comb_idx] = 1'b0;
-      bank_addr[comb_idx] = 6'd0;
+      bank_addr[comb_idx] = '0;
       bank_wdata[comb_idx] = 32'd0;
       bank_wstrb[comb_idx] = 4'h0;
     end
@@ -447,7 +480,9 @@ module cmem_top_physical #(
   genvar cmem_bank_g;
   generate
     for (cmem_bank_g = 0; cmem_bank_g < BANKS; cmem_bank_g++) begin : gen_cmem_banks
-      vtpu_sram_1rw_32x64 u_bank (
+      vtpu_sram_1rw_32x64 #(
+        .WORDS(BANK_WORDS)
+      ) u_bank (
         .clk(clk),
         .en(bank_en[cmem_bank_g]),
         .write(bank_write[cmem_bank_g]),
@@ -534,6 +569,8 @@ module vmem_top_physical #(
   localparam int WORD_BYTES = DATA_W / 8;
   localparam int WORDS = VMEM_BYTES / WORD_BYTES;
   localparam int BANK_W = (BANKS <= 1) ? 1 : $clog2(BANKS);
+  localparam int BANK_WORDS = (WORDS + BANKS - 1) / BANKS;
+  localparam int BANK_ADDR_W = (BANK_WORDS <= 1) ? 1 : $clog2(BANK_WORDS);
 
   vtpu_pkg::vmem_resp_t resp_dma_q;
   vtpu_pkg::vmem_resp_t resp_mxu_q [MXU_PORTS];
@@ -560,7 +597,7 @@ module vmem_top_physical #(
   logic [31:0] conflict_mxu_count;
   logic [BANKS-1:0] bank_en;
   logic [BANKS-1:0] bank_write;
-  logic [5:0] bank_addr [BANKS];
+  logic [BANK_ADDR_W-1:0] bank_addr [BANKS];
   logic [31:0] bank_wdata [BANKS];
   logic [3:0] bank_wstrb [BANKS];
   logic [31:0] bank_rdata [BANKS];
@@ -598,11 +635,11 @@ module vmem_top_physical #(
     end
   endfunction
 
-  function automatic logic [5:0] macro_addr(input vtpu_pkg::vmem_req_t port_req);
+  function automatic logic [BANK_ADDR_W-1:0] macro_addr(input vtpu_pkg::vmem_req_t port_req);
     logic [31:0] word_addr;
     begin
       word_addr = port_req.addr / WORD_BYTES;
-      macro_addr = 6'((word_addr / BANKS) % 64);
+      macro_addr = BANK_ADDR_W'(word_addr / BANKS);
     end
   endfunction
 
@@ -668,7 +705,7 @@ module vmem_top_physical #(
     for (comb_idx = 0; comb_idx < BANKS; comb_idx++) begin
       bank_en[comb_idx] = 1'b0;
       bank_write[comb_idx] = 1'b0;
-      bank_addr[comb_idx] = 6'd0;
+      bank_addr[comb_idx] = '0;
       bank_wdata[comb_idx] = 32'd0;
       bank_wstrb[comb_idx] = 4'h0;
     end
@@ -719,7 +756,9 @@ module vmem_top_physical #(
   genvar vmem_bank_g;
   generate
     for (vmem_bank_g = 0; vmem_bank_g < BANKS; vmem_bank_g++) begin : gen_vmem_banks
-      vtpu_sram_1rw_32x64 u_bank (
+      vtpu_sram_1rw_32x64 #(
+        .WORDS(BANK_WORDS)
+      ) u_bank (
         .clk(clk),
         .en(bank_en[vmem_bank_g]),
         .write(bank_write[vmem_bank_g]),

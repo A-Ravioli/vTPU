@@ -175,6 +175,16 @@ class Caches:
     # conv history per deltanet layer: deque-like list of recent projected vectors
     conv: dict = field(default_factory=dict)
     pos: int = 0
+    max_seq: int | None = None
+
+
+def _apply_rope_matrix(x, cos, sin):
+    d = cos.shape[0]
+    h = d // 2
+    out = x.copy()
+    rot = np.concatenate([-x[:, h:d], x[:, :h]], axis=1)
+    out[:, :d] = x[:, :d] * cos + rot * sin
+    return out
 
 
 def _attention_layer(cfg, lw, x, cache: Caches, li: int):
@@ -185,25 +195,35 @@ def _attention_layer(cfg, lw, x, cache: Caches, li: int):
     cos, sin = _rope_tables(cfg, cache.pos)
     # GQA: each kv head shared by H/n_kv_heads q heads
     group = cfg.n_q_heads // cfg.n_kv_heads
-    kv = cache.kv.setdefault(li, {"k": [], "v": []})
     # apply rope to q,k per head (partial), store this step's k,v
     kh = k.reshape(cfg.n_kv_heads, hd).copy()
     vh = v.reshape(cfg.n_kv_heads, hd).copy()
-    for h in range(cfg.n_kv_heads):
-        kh[h] = _apply_rope(kh[h], cos, sin)
-    kv["k"].append(kh)
-    kv["v"].append(vh)
-    Kc = np.stack(kv["k"], axis=0)  # [T, n_kv, hd]
-    Vc = np.stack(kv["v"], axis=0)
-    out = np.zeros(cfg.q_dim, dtype=np.float32)
-    qh = q.reshape(H, hd)
+    kh = _apply_rope_matrix(kh, cos, sin)
+    if cache.max_seq is None:
+        kv = cache.kv.setdefault(li, {"k": [], "v": []})
+        kv["k"].append(kh)
+        kv["v"].append(vh)
+        Kc = np.asarray(kv["k"], dtype=np.float32)  # [T, n_kv, hd]
+        Vc = np.asarray(kv["v"], dtype=np.float32)
+    else:
+        kv = cache.kv.get(li)
+        if kv is None:
+            kv = {
+                "k": np.empty((cache.max_seq, cfg.n_kv_heads, hd), dtype=np.float32),
+                "v": np.empty((cache.max_seq, cfg.n_kv_heads, hd), dtype=np.float32),
+            }
+            cache.kv[li] = kv
+        kv["k"][cache.pos] = kh
+        kv["v"][cache.pos] = vh
+        Kc = kv["k"][:cache.pos + 1]
+        Vc = kv["v"][:cache.pos + 1]
+    qh = _apply_rope_matrix(q.reshape(H, hd), cos, sin)
     scale = 1.0 / np.sqrt(hd)
-    for h in range(H):
-        kvh = h // group
-        qr = _apply_rope(qh[h], cos, sin) * scale
-        scores = Kc[:, kvh, :] @ qr            # [T]
-        p = np.exp(scores - scores.max()); p = p / p.sum()
-        out[h * hd:(h + 1) * hd] = p @ Vc[:, kvh, :]
+    qg = qh.reshape(cfg.n_kv_heads, group, hd) * scale
+    scores = np.einsum("tkd,kgd->kgt", Kc, qg, optimize=True)
+    p = np.exp(scores - scores.max(axis=2, keepdims=True))
+    p = p / p.sum(axis=2, keepdims=True)
+    out = np.einsum("kgt,tkd->kgd", p, Vc, optimize=True).reshape(cfg.q_dim)
     gate = 1.0 / (1.0 + np.exp(-(x @ lw.wgate)))   # sigmoid output gate [q_dim]
     return (out * gate) @ lw.wo                     # [d_model]
 
@@ -228,18 +248,20 @@ def _deltanet_layer(cfg, lw, x, cache: Caches, li: int):
     alpha = 1.0 / (1.0 + np.exp(-(x @ lw.w_alpha)))     # (0,1) decay per v-head
     beta = 1.0 / (1.0 + np.exp(-(x @ lw.w_beta)))       # (0,1)
     group = dn_v_h // dn_qk_h
-    states = cache.state.setdefault(li, [np.zeros((hdim, hdim), np.float32) for _ in range(dn_v_h)])
-    out = np.zeros(dn_v_h * hdim, dtype=np.float32)
-    for h in range(dn_v_h):
-        qk = h // group
-        kn = kd[qk] / (np.linalg.norm(kd[qk]) + 1e-6)
-        qn = qd[qk] / (np.linalg.norm(qd[qk]) + 1e-6)
-        S = states[h]
-        u = S @ kn
-        w = beta[h] * (vd[h] - alpha[h] * u)
-        S = alpha[h] * S + np.outer(w, kn)
-        states[h] = S
-        out[h * hdim:(h + 1) * hdim] = S @ qn
+    states = cache.state.get(li)
+    if states is None:
+        states = np.zeros((dn_v_h, hdim, hdim), dtype=np.float32)
+        cache.state[li] = states
+    qk_idx = np.arange(dn_v_h) // group
+    kd_g = kd[qk_idx]
+    qd_g = qd[qk_idx]
+    kn = kd_g / (np.linalg.norm(kd_g, axis=1, keepdims=True) + 1e-6)
+    qn = qd_g / (np.linalg.norm(qd_g, axis=1, keepdims=True) + 1e-6)
+    u = np.einsum("hij,hj->hi", states, kn, optimize=True)
+    w = beta[:, None] * (vd - alpha[:, None] * u)
+    states *= alpha[:, None, None]
+    states += w[:, :, None] * kn[:, None, :]
+    out = np.einsum("hij,hj->hi", states, qn, optimize=True).reshape(dn_v_h * hdim)
     gate = _silu(x @ lw.wgate)                       # SiLU output gate [dn_v]
     return (out * gate) @ lw.wo                       # [d_model]
 
@@ -263,7 +285,7 @@ def forward_token(model: Model, token: int, cache: Caches) -> np.ndarray:
 
 def generate(model: Model, prompt: list[int], n_new: int) -> list[int]:
     """Greedy autoregressive generation with KV + DeltaNet-state caches."""
-    cache = Caches()
+    cache = Caches(max_seq=len(prompt) + n_new)
     out = list(prompt)
     logits = None
     for t in out:

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from virtual_tpu.golden import PerformanceCounters
 from virtual_tpu.layout.cost import CostWeights, LayoutScore, score_floorplan
-from virtual_tpu.layout.model import Block, Floorplan, Rect, tiny_floorplan
+from virtual_tpu.layout.model import Block, Floorplan, Rect, full_floorplan, tiny_floorplan
 
 
 @dataclass(frozen=True)
@@ -164,11 +164,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--out-dir", type=Path, default=Path("results/layout_search"))
     parser.add_argument("--step", type=int, default=120)
+    parser.add_argument("--target", choices=("tiny", "full"), default="tiny")
     args = parser.parse_args(argv)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     log_path = args.out_dir / f"run_seed{args.seed}.jsonl"
-    state = anneal(seed=args.seed, iterations=args.iters, step=args.step, log_path=log_path)
+    base = full_floorplan() if args.target == "full" else tiny_floorplan()
+    state = anneal(seed=args.seed, iterations=args.iters, step=args.step, base=base, log_path=log_path)
     best_path = args.out_dir / f"best_seed{args.seed}.json"
     fragment_path = args.out_dir / f"best_seed{args.seed}.mk"
     best_path.write_text(json.dumps(state.best.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")

@@ -164,6 +164,48 @@ def tiny_floorplan(design: DesignPoint | None = None) -> Floorplan:
     return Floorplan(design=design, die=die, core=core, blocks=blocks, nets=nets)
 
 
+def full_floorplan(design: DesignPoint | None = None) -> Floorplan:
+    """default-scale physical floorplan using aggregate memory/compute regions."""
+
+    design = design or DesignPoint(
+        name="vtpu_pd_full",
+        num_tensor_cores=2,
+        mxus_per_tc=4,
+        array_m=16,
+        array_n=16,
+        array_k=16,
+        vmem_bytes=262144,
+        cmem_bytes=524288,
+        hbm_bytes=1048576,
+        instr_depth=1024,
+        clock_period_ns=80.0,
+    )
+    die = Rect(0, 0, 30000, 44000)
+    core = Rect(200, 200, 29600, 43600)
+    blocks = (
+        Block("control", "logic", Rect(27400, 900, 1200, 900)),
+        Block("dma", "logic", Rect(27400, 2100, 1200, 900)),
+        Block("instr_mem", "sram", Rect(500, 400, 26600, 300)),
+        Block("hbm_if", "io", Rect(27400, 3300, 1400, 3000), fixed=True),
+        Block("tc0_compute", "compute", Rect(27400, 7500, 1400, 5200)),
+        Block("tc0_vmem", "sram", Rect(500, 1200, 26600, 9600)),
+        Block("cmem", "sram", Rect(500, 11200, 26600, 19200)),
+        Block("tc1_vmem", "sram", Rect(500, 30600, 26600, 9600)),
+        Block("tc1_compute", "compute", Rect(27400, 34500, 1400, 5200)),
+    )
+    nets = (
+        Net("host_control", ("control", "instr_mem", "dma"), 1.0),
+        Net("dma_hbm", ("dma", "hbm_if"), 3.0),
+        Net("dma_cmem", ("dma", "cmem"), 1.5),
+        Net("cmem_tc0", ("cmem", "tc0_vmem"), 2.0),
+        Net("cmem_tc1", ("cmem", "tc1_vmem"), 2.0),
+        Net("tc0_local", ("tc0_vmem", "tc0_compute"), 4.0),
+        Net("tc1_local", ("tc1_vmem", "tc1_compute"), 4.0),
+        Net("control_tc", ("control", "tc0_compute", "tc1_compute"), 1.0),
+    )
+    return Floorplan(design=design, die=die, core=core, blocks=blocks, nets=nets, grid=100)
+
+
 def half_perimeter_wirelength(blocks: Iterable[Block]) -> float:
     """hpwl bounding-box wirelength for a set of block centers."""
 

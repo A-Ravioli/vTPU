@@ -30,7 +30,7 @@ RTL_SOURCES := \
 	rtl/memory/vmem_top.sv \
 	rtl/top/virtual_tpu_v4_top.sv
 
-.PHONY: all test-python test-rtl-unit test-rtl-integration lint physical-lint physical-synth-check physical-synth-check-docker physical-openroad physical-openroad-docker physical-openroad-synth-odb-docker physical-openroad-floorplan-docker waves clean
+.PHONY: all test-python test-rtl-unit test-rtl-integration lint physical-lint physical-full-lint physical-synth-check physical-synth-check-docker physical-full-synth-check-docker physical-openroad physical-openroad-docker physical-openroad-synth-odb-docker physical-openroad-floorplan-docker physical-full-openroad-docker physical-full-openroad-floorplan-docker waves clean
 
 all: test-python test-rtl-unit test-rtl-integration
 
@@ -48,6 +48,14 @@ lint:
 physical-lint:
 	@if command -v verilator >/dev/null 2>&1; then \
 		verilator --lint-only -Wall --timing --Wno-MULTITOP --Wno-UNUSEDPARAM --Wno-UNUSEDSIGNAL --Wno-BLKSEQ -Irtl/common -f physical/rtl_sources.f --top-module vtpu_pd_tiny_top; \
+	else \
+		echo "verilator not installed"; \
+		exit 1; \
+	fi
+
+physical-full-lint:
+	@if command -v verilator >/dev/null 2>&1; then \
+		verilator --lint-only -Wall --timing --Wno-MULTITOP --Wno-UNUSEDPARAM --Wno-UNUSEDSIGNAL --Wno-BLKSEQ -Irtl/common -f physical/rtl_sources.f --top-module vtpu_pd_full_top; \
 	else \
 		echo "verilator not installed"; \
 		exit 1; \
@@ -71,6 +79,14 @@ physical-synth-check-docker:
 		-w /work/vTPU \
 		$(OPENROAD_DOCKER_IMAGE) \
 		bash -lc 'source /OpenROAD-flow-scripts/env.sh && yosys -q -m slang -s physical/yosys/synth_vtpu_pd_tiny_slang.ys'
+
+physical-full-synth-check-docker:
+	docker run --rm --platform $(OPENROAD_DOCKER_PLATFORM) \
+		-u $$(id -u):$$(id -g) \
+		-v $(CURDIR):/work/vTPU \
+		-w /work/vTPU \
+		$(OPENROAD_DOCKER_IMAGE) \
+		bash -lc 'source /OpenROAD-flow-scripts/env.sh && yosys -q -m slang -s physical/yosys/synth_vtpu_pd_full_slang.ys'
 
 physical-openroad:
 	@if [ -z "$(OPENROAD_FLOW_ROOT)" ]; then \
@@ -105,6 +121,24 @@ physical-openroad-floorplan-docker:
 		-w /OpenROAD-flow-scripts/flow \
 		$(OPENROAD_DOCKER_IMAGE) \
 		bash -lc 'source /OpenROAD-flow-scripts/env.sh && cp /work/vTPU/physical/openroad/designs/sky130hd/vtpu_pd_tiny/constraint.sdc results/sky130hd/vtpu_pd_tiny/base/1_synth.sdc && make DESIGN_CONFIG=/work/vTPU/physical/openroad/designs/sky130hd/vtpu_pd_tiny/config.mk do-2_1_floorplan'
+
+physical-full-openroad-docker:
+	docker run --rm --platform $(OPENROAD_DOCKER_PLATFORM) \
+		-u $$(id -u):$$(id -g) \
+		-v $(CURDIR):/work/vTPU \
+		-v $(OPENROAD_FLOW_ROOT):/OpenROAD-flow-scripts/flow \
+		-w /OpenROAD-flow-scripts/flow \
+		$(OPENROAD_DOCKER_IMAGE) \
+		bash -lc 'source /OpenROAD-flow-scripts/env.sh && make DESIGN_CONFIG=/work/vTPU/physical/openroad/designs/sky130hd/vtpu_pd_full/config.mk'
+
+physical-full-openroad-floorplan-docker:
+	docker run --rm --platform $(OPENROAD_DOCKER_PLATFORM) \
+		-u $$(id -u):$$(id -g) \
+		-v $(CURDIR):/work/vTPU \
+		-v $(OPENROAD_FLOW_ROOT):/OpenROAD-flow-scripts/flow \
+		-w /OpenROAD-flow-scripts/flow \
+		$(OPENROAD_DOCKER_IMAGE) \
+		bash -lc 'source /OpenROAD-flow-scripts/env.sh && make DESIGN_CONFIG=/work/vTPU/physical/openroad/designs/sky130hd/vtpu_pd_full/config.mk do-2_1_floorplan'
 
 test-rtl-unit: lint
 	PYTHONPATH=$(PYTHONPATH):tests/cocotb $(PYTHON) -m pytest -q tests/rtl/test_pe_runner.py
