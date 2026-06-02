@@ -25,6 +25,7 @@ RTL_SOURCES := \
 	rtl/isa/control_fsm.sv \
 	rtl/memory/hbm_model.sv \
 	rtl/memory/hbm_model_loadable.sv \
+	rtl/memory/hbm_model_mmap.sv \
 	rtl/memory/cmem_top.sv \
 	rtl/memory/dma_engine.sv \
 	rtl/memory/vmem_top.sv \

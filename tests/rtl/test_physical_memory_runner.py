@@ -2,6 +2,8 @@ from pathlib import Path
 
 from cocotb_tools.runner import get_runner
 
+from runner_utils import rebuild_enabled, waves_enabled
+
 
 REPO = Path(__file__).resolve().parents[2]
 COMMON = [REPO / "rtl/common/vtpu_pkg.sv", REPO / "rtl/physical/physical_memories.sv"]
@@ -13,8 +15,8 @@ def test_vmem_top_physical_cocotb() -> None:
         sources=COMMON,
         hdl_toplevel="vmem_top_physical",
         build_dir=REPO / "sim_build/vmem_top_physical",
-        always=True,
-        waves=True,
+        always=rebuild_enabled(),
+        waves=waves_enabled(),
         build_args=["-I" + str(REPO / "rtl/common")],
     )
     runner.test(
@@ -22,7 +24,7 @@ def test_vmem_top_physical_cocotb() -> None:
         test_module="test_physical_memories",
         build_dir=REPO / "sim_build/vmem_top_physical",
         test_dir=REPO / "tests/cocotb",
-        waves=True,
+        waves=waves_enabled(),
     )
 
 
@@ -32,8 +34,8 @@ def test_cmem_top_physical_cocotb() -> None:
         sources=COMMON,
         hdl_toplevel="cmem_top_physical",
         build_dir=REPO / "sim_build/cmem_top_physical",
-        always=True,
-        waves=True,
+        always=rebuild_enabled(),
+        waves=waves_enabled(),
         build_args=["-I" + str(REPO / "rtl/common")],
     )
     runner.test(
@@ -41,7 +43,7 @@ def test_cmem_top_physical_cocotb() -> None:
         test_module="test_physical_memories",
         build_dir=REPO / "sim_build/cmem_top_physical",
         test_dir=REPO / "tests/cocotb",
-        waves=True,
+        waves=waves_enabled(),
     )
 
 
@@ -51,8 +53,8 @@ def test_instr_mem_physical_cocotb() -> None:
         sources=COMMON,
         hdl_toplevel="instr_mem_physical",
         build_dir=REPO / "sim_build/instr_mem_physical",
-        always=True,
-        waves=True,
+        always=rebuild_enabled(),
+        waves=waves_enabled(),
         build_args=["-I" + str(REPO / "rtl/common")],
     )
     runner.test(
@@ -60,5 +62,5 @@ def test_instr_mem_physical_cocotb() -> None:
         test_module="test_physical_memories",
         build_dir=REPO / "sim_build/instr_mem_physical",
         test_dir=REPO / "tests/cocotb",
-        waves=True,
+        waves=waves_enabled(),
     )

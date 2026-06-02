@@ -2,6 +2,8 @@ from pathlib import Path
 
 from cocotb_tools.runner import get_runner
 
+from runner_utils import rebuild_enabled, verilator_build_args, waves_enabled
+
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -12,16 +14,16 @@ def run_unit(name: str, sources: list[str], extra_args: list[str] | None = None)
         sources=[REPO / path for path in sources],
         hdl_toplevel=name,
         build_dir=REPO / f"sim_build/{name}",
-        always=True,
-        waves=True,
-        build_args=["-I" + str(REPO / "rtl/common"), "--Wno-UNUSEDPARAM", "--Wno-UNUSEDSIGNAL"] + (extra_args or []),
+        always=rebuild_enabled(),
+        waves=waves_enabled(),
+        build_args=verilator_build_args(REPO, *(extra_args or [])),
     )
     runner.test(
         hdl_toplevel=name,
         test_module="test_unit_matrix",
         build_dir=REPO / f"sim_build/{name}",
         test_dir=REPO / "tests/cocotb",
-        waves=True,
+        waves=waves_enabled(),
     )
 
 

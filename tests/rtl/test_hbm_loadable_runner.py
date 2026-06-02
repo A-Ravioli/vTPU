@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 from cocotb_tools.runner import get_runner
 
+from runner_utils import rebuild_enabled, verilator_build_args, waves_enabled
 from virtual_tpu.qwen.weights import build_hbm_image
 
 
@@ -30,9 +31,10 @@ def test_hbm_loadable_cocotb() -> None:
         sources=[REPO / "rtl/common/vtpu_pkg.sv", REPO / "rtl/memory/hbm_model_loadable.sv"],
         hdl_toplevel="hbm_model_loadable",
         build_dir=build_dir,
-        always=True,
+        always=rebuild_enabled(),
+        waves=waves_enabled(),
         parameters={"HBM_BYTES": 65536, "READ_LATENCY": 2, "WRITE_LATENCY": 2},
-        build_args=["-I" + str(REPO / "rtl/common"), "--Wno-UNUSEDPARAM", "--Wno-UNUSEDSIGNAL"],
+        build_args=verilator_build_args(REPO),
     )
     runner.test(
         hdl_toplevel="hbm_model_loadable",
@@ -40,4 +42,5 @@ def test_hbm_loadable_cocotb() -> None:
         build_dir=build_dir,
         test_dir=REPO / "tests/cocotb",
         plusargs=[f"+hbm_image={image_path}"],
+        waves=waves_enabled(),
     )

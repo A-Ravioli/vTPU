@@ -7,8 +7,15 @@ export VERILOG_FILES = \
   $(VTPU_REPO_ROOT)/rtl/common/vtpu_pkg.sv \
   $(VTPU_REPO_ROOT)/rtl/common/perf_counters.sv \
   $(VTPU_REPO_ROOT)/rtl/primitive/pe_int8.sv \
+  $(VTPU_REPO_ROOT)/rtl/primitive/fp32_mul.sv \
+  $(VTPU_REPO_ROOT)/rtl/primitive/fp32_add.sv \
+  $(VTPU_REPO_ROOT)/rtl/primitive/fp32_recip.sv \
+  $(VTPU_REPO_ROOT)/rtl/primitive/fp32_rsqrt.sv \
+  $(VTPU_REPO_ROOT)/rtl/primitive/fp32_exp.sv \
+  $(VTPU_REPO_ROOT)/rtl/primitive/pe_bf16.sv \
   $(VTPU_REPO_ROOT)/rtl/memory/vmem_bank.sv \
   $(VTPU_REPO_ROOT)/rtl/mxu/systolic_array.sv \
+  $(VTPU_REPO_ROOT)/rtl/mxu/systolic_array_bf16.sv \
   $(VTPU_REPO_ROOT)/rtl/mxu/mxu_top.sv \
   $(VTPU_REPO_ROOT)/rtl/vector/vector_unit.sv \
   $(VTPU_REPO_ROOT)/rtl/vector/reduce_unit.sv \

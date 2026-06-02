@@ -2,6 +2,8 @@ from pathlib import Path
 
 from cocotb_tools.runner import get_runner
 
+from runner_utils import rebuild_enabled, waves_enabled
+
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -19,8 +21,8 @@ def test_fp_transcendental_cocotb() -> None:
         ],
         hdl_toplevel="fp_trans_probe",
         build_dir=REPO / "sim_build/fp_trans_probe",
-        always=True,
-        waves=False,
+        always=rebuild_enabled(),
+        waves=waves_enabled(),
         build_args=["--Wno-UNUSEDPARAM", "--Wno-UNUSEDSIGNAL"],
     )
     runner.test(
@@ -28,5 +30,5 @@ def test_fp_transcendental_cocotb() -> None:
         test_module="test_fp_transcendental",
         build_dir=REPO / "sim_build/fp_trans_probe",
         test_dir=REPO / "tests/cocotb",
-        waves=False,
+        waves=waves_enabled(),
     )

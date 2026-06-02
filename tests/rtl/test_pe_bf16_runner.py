@@ -2,6 +2,8 @@ from pathlib import Path
 
 from cocotb_tools.runner import get_runner
 
+from runner_utils import rebuild_enabled, waves_enabled
+
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -16,12 +18,13 @@ def test_pe_bf16_cocotb() -> None:
         ],
         hdl_toplevel="pe_bf16",
         build_dir=REPO / "sim_build/pe_bf16",
-        always=True,
-        waves=True,
+        always=rebuild_enabled(),
+        waves=waves_enabled(),
     )
     runner.test(
         hdl_toplevel="pe_bf16",
         test_module="test_pe_bf16",
         build_dir=REPO / "sim_build/pe_bf16",
-        waves=True,
+        test_dir=REPO / "tests/cocotb",
+        waves=waves_enabled(),
     )

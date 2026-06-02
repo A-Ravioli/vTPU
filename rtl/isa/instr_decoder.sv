@@ -88,9 +88,9 @@ module instr_decoder (
                       (unpacked.imm2 != 16'd0));
 
     vector_ok = (unpacked.opcode != vtpu_pkg::OPC_VECTOR_OP) ||
-                ((unpacked.imm1 <= 16'd5) && (unpacked.imm0 != 16'd0));
+                ((unpacked.imm1 <= 16'd15) && (unpacked.imm0 != 16'd0));
     reduce_ok = (unpacked.opcode != vtpu_pkg::OPC_REDUCE) ||
-                ((unpacked.imm1 <= 16'd5) &&
+                ((unpacked.imm1 <= 16'd10) &&
                  (unpacked.imm0 != 16'd0) &&
                  ((unpacked.imm1 <= 16'd1) || (unpacked.imm2 != 16'd0)));
 

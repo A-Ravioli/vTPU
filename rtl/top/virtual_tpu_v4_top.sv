@@ -19,7 +19,9 @@ module virtual_tpu_v4_top #(
   parameter int CMEM_BYTES = 524288,
   parameter int HBM_BYTES = 1048576,
   parameter int INSTR_DEPTH = 1024,
-  parameter bit PHYSICAL_MEMORIES = 1'b0
+  parameter bit PHYSICAL_MEMORIES = 1'b0,
+  parameter bit SIM_LOADABLE_HBM = 1'b0,
+  parameter bit SIM_MMAP_HBM = 1'b0
 )(
   input logic clk,
   input logic rst_n,
@@ -288,6 +290,44 @@ module virtual_tpu_v4_top #(
   generate
     if (PHYSICAL_MEMORIES) begin : gen_physical_hbm
       hbm_model_physical #(
+        .HBM_BYTES(HBM_BYTES),
+        .DATA_W(32),
+        .READ_LATENCY(1),
+        .WRITE_LATENCY(1)
+      ) u_hbm (
+        .clk(clk),
+        .rst_n(rst_n),
+        .req(hbm_req),
+        .resp(hbm_resp),
+        .host_we(hbm_host_we),
+        .host_addr(hbm_host_addr),
+        .host_wdata(host_req.wdata),
+        .host_wstrb(4'hF),
+        .host_rdata(hbm_host_rdata),
+        .access_pulse(hbm_access_pulse),
+        .stall_pulse(hbm_stall_pulse)
+      );
+    end else if (SIM_MMAP_HBM) begin : gen_mmap_hbm
+      hbm_model_mmap #(
+        .HBM_BYTES(HBM_BYTES),
+        .DATA_W(32),
+        .READ_LATENCY(1),
+        .WRITE_LATENCY(1)
+      ) u_hbm (
+        .clk(clk),
+        .rst_n(rst_n),
+        .req(hbm_req),
+        .resp(hbm_resp),
+        .host_we(hbm_host_we),
+        .host_addr(hbm_host_addr),
+        .host_wdata(host_req.wdata),
+        .host_wstrb(4'hF),
+        .host_rdata(hbm_host_rdata),
+        .access_pulse(hbm_access_pulse),
+        .stall_pulse(hbm_stall_pulse)
+      );
+    end else if (SIM_LOADABLE_HBM) begin : gen_loadable_hbm
+      hbm_model_loadable #(
         .HBM_BYTES(HBM_BYTES),
         .DATA_W(32),
         .READ_LATENCY(1),

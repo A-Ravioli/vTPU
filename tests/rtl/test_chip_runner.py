@@ -2,6 +2,8 @@ from pathlib import Path
 
 from cocotb_tools.runner import get_runner
 
+from runner_utils import rebuild_enabled, verilator_build_args, waves_enabled
+
 
 REPO = Path(__file__).resolve().parents[2]
 RTL = [
@@ -22,6 +24,8 @@ RTL = [
     "rtl/memory/vmem_top.sv",
     "rtl/memory/cmem_top.sv",
     "rtl/memory/hbm_model.sv",
+    "rtl/memory/hbm_model_loadable.sv",
+    "rtl/memory/hbm_model_mmap.sv",
     "rtl/memory/dma_engine.sv",
     "rtl/isa/instr_mem.sv",
     "rtl/isa/instr_decoder.sv",
@@ -37,14 +41,14 @@ def test_chip_top_cocotb() -> None:
         sources=[REPO / path for path in RTL],
         hdl_toplevel="virtual_tpu_v4_top",
         build_dir=REPO / "sim_build/chip_top",
-        always=True,
-        waves=True,
-        build_args=["-I" + str(REPO / "rtl/common"), "--Wno-UNUSEDPARAM", "--Wno-UNUSEDSIGNAL"],
+        always=rebuild_enabled(),
+        waves=waves_enabled(),
+        build_args=verilator_build_args(REPO),
     )
     runner.test(
         hdl_toplevel="virtual_tpu_v4_top",
         test_module="test_chip_top",
         build_dir=REPO / "sim_build/chip_top",
         test_dir=REPO / "tests/cocotb",
-        waves=True,
+        waves=waves_enabled(),
     )

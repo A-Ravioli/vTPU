@@ -27,6 +27,17 @@ module instr_mem #(
   output logic fetch_error
 );
   logic [127:0] mem [0:DEPTH-1];
+`ifndef SYNTHESIS
+  string instr_hex_path;
+
+  initial begin
+    for (int unsigned i = 0; i < DEPTH; i++) mem[i] = '0;
+    if ($value$plusargs("instr_hex=%s", instr_hex_path)) begin
+      $readmemh(instr_hex_path, mem);
+      $display("instr_mem: loaded instructions from '%s'", instr_hex_path);
+    end
+  end
+`endif
 
   assign instr = fetch_en ? mem[fetch_pc] : mem[fetch_pc];
   assign host_rdata = mem[host_addr][host_lane * 32 +: 32];
