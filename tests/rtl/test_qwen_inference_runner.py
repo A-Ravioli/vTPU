@@ -13,9 +13,13 @@ REPO = Path(__file__).resolve().parents[2]
 
 def test_qwen_inference_cocotb() -> None:
     workload = os.getenv("QWEN_WORKLOAD", "tiny")
-    mxu_dim = int(os.getenv("QWEN_MXU_DIM", "16"))
+    token_workload = workload in {"tiny_full_token", "0p8b_token", "0p8b_autoregressive", "0p8b_real_lm_head", "0p8b_real_mlp"}
+    mxu_dim = int(os.getenv("QWEN_MXU_DIM", "128" if token_workload else "16"))
+    fast_bf16 = os.getenv("FAST_BF16_MXU", "1" if token_workload else "0") == "1"
+    zero_shortcut = os.getenv("FAST_BF16_ZERO_TILE_SHORTCUT", "1" if workload in {"0p8b_token", "0p8b_autoregressive"} else "0") == "1"
     instr_depth = int(os.getenv("QWEN_INSTR_DEPTH", "4096"))
-    build_dir = REPO / "sim_build/qwen_infer" / workload
+    build_dir = REPO / "sim_build/qwen_infer" / f"{workload}_mxu{mxu_dim}_fast{int(fast_bf16)}_zero{int(zero_shortcut)}"
+    os.environ.setdefault("QWEN_MXU_DIM", str(mxu_dim))
     run = build_qwen_infer_artifacts(build_dir, workload)
     os.environ["QWEN_RUN_JSON"] = str(build_dir / "run.json")
 
@@ -33,6 +37,8 @@ def test_qwen_inference_cocotb() -> None:
             "ARRAY_M": mxu_dim,
             "ARRAY_N": mxu_dim,
             "ARRAY_K": mxu_dim,
+            "FAST_BF16_MXU": int(fast_bf16),
+            "FAST_BF16_ZERO_TILE_SHORTCUT": int(zero_shortcut),
         },
         build_args=verilator_build_args(REPO, optimize=True),
     )

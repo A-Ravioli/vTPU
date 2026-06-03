@@ -17,7 +17,9 @@ module tensor_core #(
   parameter int DATA_W = 8,
   parameter int ACC_W = 32,
   parameter int VMEM_BYTES = 262144,
-  parameter bit PHYSICAL_MEMORIES = 1'b0
+  parameter bit PHYSICAL_MEMORIES = 1'b0,
+  parameter bit FAST_BF16_MXU = 1'b0,
+  parameter bit FAST_BF16_ZERO_TILE_SHORTCUT = 1'b0
 )(
   input  logic clk,
   input  logic rst_n,
@@ -61,6 +63,11 @@ module tensor_core #(
   vtpu_pkg::unit_status_t reduce_status;
   vtpu_pkg::vmem_req_t reduce_req;
   vtpu_pkg::vmem_resp_t reduce_resp;
+
+  vtpu_pkg::mxu_cmd_t fast_mxu_cmd;
+  logic fast_mxu_valid;
+  logic fast_mxu_ready;
+  vtpu_pkg::unit_status_t fast_mxu_status;
 
   clear_state_t clear_state_q;
   vtpu_pkg::tc_cmd_t clear_cmd_q;
@@ -132,7 +139,7 @@ module tensor_core #(
     logic busy_any;
     integer busy_idx;
     begin
-      busy_any = vector_status.busy || reduce_status.busy || (clear_state_q == CLEAR_RUN);
+      busy_any = vector_status.busy || reduce_status.busy || fast_mxu_status.busy || (clear_state_q == CLEAR_RUN);
       for (busy_idx = 0; busy_idx < MXUS_PER_TC; busy_idx++) begin
         busy_any = busy_any || mxu_status[busy_idx].busy;
       end
@@ -157,6 +164,9 @@ module tensor_core #(
       end
       if (reduce_status.error && (first_child_error_code == vtpu_pkg::ERR_NONE)) begin
         first_child_error_code = reduce_status.error_code;
+      end
+      if (fast_mxu_status.error && (first_child_error_code == vtpu_pkg::ERR_NONE)) begin
+        first_child_error_code = fast_mxu_status.error_code;
       end
       if ((clear_state_q == CLEAR_ERROR) && (first_child_error_code == vtpu_pkg::ERR_NONE)) begin
         first_child_error_code = vtpu_pkg::ERR_BAD_ADDR;
@@ -184,14 +194,21 @@ module tensor_core #(
 
     vector_valid = 1'b0;
     reduce_valid = 1'b0;
+    fast_mxu_valid = 1'b0;
+    fast_mxu_cmd = mxu_cmd;
     cmd_ready = 1'b0;
 
     if (!local_selected) begin
       cmd_ready = 1'b1;
     end else if (cmd.opcode == vtpu_pkg::OPC_MATMUL) begin
-      cmd_ready = chosen_valid && mxu_cmd_ready[chosen_mxu];
-      if (cmd_valid && cmd_ready) begin
-        mxu_cmd_valid[chosen_mxu] = 1'b1;
+      if (FAST_BF16_MXU && cmd.flags[5]) begin
+        cmd_ready = fast_mxu_ready && !child_busy_comb;
+        fast_mxu_valid = cmd_valid && cmd_ready;
+      end else begin
+        cmd_ready = chosen_valid && mxu_cmd_ready[chosen_mxu];
+        if (cmd_valid && cmd_ready) begin
+          mxu_cmd_valid[chosen_mxu] = 1'b1;
+        end
       end
     end else if (cmd.opcode == vtpu_pkg::OPC_VECTOR_OP) begin
       cmd_ready = vector_ready && !child_busy_comb;
@@ -222,27 +239,38 @@ module tensor_core #(
   end
   genvar mxu_g;
   generate
-    for (mxu_g = 0; mxu_g < MXUS_PER_TC; mxu_g++) begin : gen_mxus
-      mxu_top #(
-        .ARRAY_M(ARRAY_M),
-        .ARRAY_N(ARRAY_N),
-        .ARRAY_K(ARRAY_K),
-        .DATA_W(DATA_W),
-        .ACC_W(ACC_W),
-        .VMEM_BYTES(VMEM_BYTES)
-      ) u_mxu (
-        .clk(clk),
-        .rst_n(rst_n),
-        .cmd(mxu_cmd_q[mxu_g]),
-        .cmd_valid(mxu_cmd_valid[mxu_g]),
-        .cmd_ready(mxu_cmd_ready[mxu_g]),
-        .vmem_req(mxu_req[mxu_g]),
-        .vmem_resp(mxu_resp[mxu_g]),
-        .status(mxu_status[mxu_g])
-      );
-      assign mxu_busy[mxu_g] = mxu_status[mxu_g].busy;
-      assign mxu_done[mxu_g] = mxu_status[mxu_g].done;
-      assign mxu_error[mxu_g] = mxu_status[mxu_g].error;
+    if (FAST_BF16_MXU) begin : gen_fast_mxu_stubs
+      for (mxu_g = 0; mxu_g < MXUS_PER_TC; mxu_g++) begin : gen_mxus
+        assign mxu_cmd_ready[mxu_g] = 1'b0;
+        assign mxu_req[mxu_g] = '0;
+        assign mxu_status[mxu_g] = '{busy: 1'b0, done: 1'b0, error: 1'b0, error_code: vtpu_pkg::ERR_NONE};
+        assign mxu_busy[mxu_g] = 1'b0;
+        assign mxu_done[mxu_g] = 1'b0;
+        assign mxu_error[mxu_g] = 1'b0;
+      end
+    end else begin : gen_real_mxus
+      for (mxu_g = 0; mxu_g < MXUS_PER_TC; mxu_g++) begin : gen_mxus
+        mxu_top #(
+          .ARRAY_M(ARRAY_M),
+          .ARRAY_N(ARRAY_N),
+          .ARRAY_K(ARRAY_K),
+          .DATA_W(DATA_W),
+          .ACC_W(ACC_W),
+          .VMEM_BYTES(VMEM_BYTES)
+        ) u_mxu (
+          .clk(clk),
+          .rst_n(rst_n),
+          .cmd(mxu_cmd_q[mxu_g]),
+          .cmd_valid(mxu_cmd_valid[mxu_g]),
+          .cmd_ready(mxu_cmd_ready[mxu_g]),
+          .vmem_req(mxu_req[mxu_g]),
+          .vmem_resp(mxu_resp[mxu_g]),
+          .status(mxu_status[mxu_g])
+        );
+        assign mxu_busy[mxu_g] = mxu_status[mxu_g].busy;
+        assign mxu_done[mxu_g] = mxu_status[mxu_g].done;
+        assign mxu_error[mxu_g] = mxu_status[mxu_g].error;
+      end
     end
   endgenerate
 
@@ -276,6 +304,9 @@ module tensor_core #(
 
   generate
     if (PHYSICAL_MEMORIES) begin : gen_physical_vmem
+      assign fast_mxu_ready = 1'b0;
+      assign fast_mxu_status = '{busy: 1'b0, done: 1'b0, error: 1'b0, error_code: vtpu_pkg::ERR_NONE};
+
       vmem_top_physical #(
         .VMEM_BYTES(VMEM_BYTES),
         .DATA_W(32),
@@ -300,7 +331,8 @@ module tensor_core #(
         .VMEM_BYTES(VMEM_BYTES),
         .DATA_W(32),
         .BANKS(vtpu_pkg::VTPU_VMEM_BANKS),
-        .MXU_PORTS(MXUS_PER_TC)
+        .MXU_PORTS(MXUS_PER_TC),
+        .FAST_BF16_ZERO_TILE_SHORTCUT(FAST_BF16_ZERO_TILE_SHORTCUT)
       ) u_vmem (
         .clk(clk),
         .rst_n(rst_n),
@@ -312,6 +344,10 @@ module tensor_core #(
         .resp_vector(vector_resp),
         .req_reduce(reduce_port_req),
         .resp_reduce(reduce_port_resp),
+        .fast_mxu_cmd(fast_mxu_cmd),
+        .fast_mxu_cmd_valid(fast_mxu_valid),
+        .fast_mxu_cmd_ready(fast_mxu_ready),
+        .fast_mxu_status(fast_mxu_status),
         .access_count_pulse(vmem_access_count_pulse),
         .bank_conflict_count_pulse(vmem_bank_conflict_count_pulse)
       );
@@ -335,7 +371,8 @@ module tensor_core #(
     end else begin
       unsupported_q <= 1'b0;
 
-      if (cmd_valid && local_selected && (cmd.opcode == vtpu_pkg::OPC_MATMUL) && cmd_ready) begin
+      if (cmd_valid && local_selected && (cmd.opcode == vtpu_pkg::OPC_MATMUL) && cmd_ready &&
+          !(FAST_BF16_MXU && cmd.flags[5])) begin
         rr_ptr_q <= (int'(chosen_mxu) == (MXUS_PER_TC - 1)) ? '0 : (chosen_mxu + 1'b1);
       end
 
@@ -390,11 +427,13 @@ module tensor_core #(
   assign status_done_comb = (clear_state_q == CLEAR_DONE) ||
                             vector_status.done ||
                             reduce_status.done ||
+                            fast_mxu_status.done ||
                             (|mxu_done);
   assign status_error_comb = unsupported_q ||
                              (clear_state_q == CLEAR_ERROR) ||
                              vector_status.error ||
                              reduce_status.error ||
+                             fast_mxu_status.error ||
                              (|error_mask);
   assign status.busy = child_busy_comb;
   assign status.done = status_done_comb;

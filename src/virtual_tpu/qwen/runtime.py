@@ -56,11 +56,11 @@ class QwenConfig:
 
 
 def qwen35_0p8b() -> QwenConfig:
-    """Approximate Qwen3.5-0.8B shape (from the public model card)."""
+    """Qwen3.5-0.8B text shape from the local HuggingFace config."""
     return QwenConfig(
         n_layers=24, d_model=1024, d_ff=3584, vocab=248320,
-        n_q_heads=32, n_kv_heads=2, head_dim=256, rope_dim=64,
-        dn_v_heads=64, dn_qk_heads=16, dn_head_dim=128, conv_k=4, attn_every=4,
+        n_q_heads=8, n_kv_heads=2, head_dim=256, rope_dim=64,
+        dn_v_heads=16, dn_qk_heads=16, dn_head_dim=128, conv_k=4, attn_every=4,
     )
 
 

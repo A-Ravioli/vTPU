@@ -23,6 +23,9 @@ async def reset(dut) -> None:
     if hasattr(dut, "req_mxu"):
         for idx in range(len(dut.req_mxu)):
             dut.req_mxu[idx].value = 0
+    if hasattr(dut, "fast_mxu_cmd"):
+        dut.fast_mxu_cmd.value = 0
+        dut.fast_mxu_cmd_valid.value = 0
     await RisingEdge(dut.clk)
     await RisingEdge(dut.clk)
     dut.rst_n.value = 1

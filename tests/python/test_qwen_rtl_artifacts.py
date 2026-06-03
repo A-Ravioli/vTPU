@@ -27,3 +27,31 @@ def test_qwen_rtl_artifact_bundle(tmp_path):
     assert run["output"]["dtype"] == "float32"
     assert expected.shape == tuple(run["output"]["shape"])
     assert Instruction.from_hex(program[-1]).opcode_enum is Opcode.HALT
+
+
+def test_qwen_0p8b_artifact_uses_full_shape_sparse_stream(tmp_path, monkeypatch):
+    monkeypatch.setenv("QWEN_MXU_DIM", "128")
+    run = build_qwen_infer_artifacts(tmp_path, "0p8b_token")
+    program = (tmp_path / "program.hex").read_text().strip().splitlines()
+
+    assert run["workload"] == "0p8b_token"
+    assert run["qwen_config"]["d_model"] == 1024
+    assert run["executable_slice"]["tile"] == 128
+    assert run["executable_slice"]["matmul_instructions"] == run["full_token_cost"]["matmul_instr"]
+    assert run["program_instructions"] > 4096
+    assert len(program) == run["program_instructions"]
+    assert (tmp_path / "weights.hbm").stat().st_size < 128 * 1024
+    assert Instruction.from_hex(program[-1]).opcode_enum is Opcode.HALT
+
+
+def test_qwen_0p8b_autoregressive_artifact_metadata(tmp_path, monkeypatch):
+    monkeypatch.setenv("QWEN_MXU_DIM", "128")
+    monkeypatch.setenv("QWEN_DECODE_STEPS", "3")
+    monkeypatch.setenv("QWEN_PROMPT_TOKEN", "17")
+    run = build_qwen_infer_artifacts(tmp_path, "0p8b_autoregressive")
+
+    assert run["workload"] == "0p8b_autoregressive"
+    assert run["autoregressive"]["prompt_tokens"] == [17]
+    assert run["autoregressive"]["decode_steps"] == 3
+    assert run["autoregressive"]["expected_generated_tokens"] == [17, 0, 0, 0]
+    assert run["executable_slice"]["matmul_instructions"] == run["full_token_cost"]["matmul_instr"]

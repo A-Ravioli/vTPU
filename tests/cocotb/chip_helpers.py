@@ -65,6 +65,8 @@ async def mmio_write(dut, addr: int, value: int) -> bool:
     resp = int(dut.host_resp.value)
     dut.host_req_valid.value = 0
     dut.host_req.value = 0
+    await RisingEdge(dut.clk)
+    await Timer(1, unit="ps")
     return unpack_host_resp(resp)[1]
 
 
@@ -76,6 +78,8 @@ async def mmio_read(dut, addr: int) -> tuple[int, bool]:
     resp = int(dut.host_resp.value)
     dut.host_req_valid.value = 0
     dut.host_req.value = 0
+    await RisingEdge(dut.clk)
+    await Timer(1, unit="ps")
     return unpack_host_resp(resp)
 
 
@@ -121,10 +125,12 @@ async def start_and_wait(dut, timeout_cycles: int = 20000) -> tuple[int, int]:
     for _ in range(timeout_cycles):
         status, err = await mmio_read(dut, REG_STATUS)
         assert not err
-        if status & 0b101:
+        if status & 0b100:
             error_code, code_err = await mmio_read(dut, REG_ERROR_CODE)
             assert not code_err
             return status, error_code
+        if (status & 0b001) and not (status & 0b010):
+            return status, 0
         await RisingEdge(dut.clk)
     pc, _ = await mmio_read(dut, REG_PC)
     raise AssertionError(f"chip timed out at pc={pc}")

@@ -7,7 +7,17 @@ name = "virtual-tpu"
 version = "0.1.0"
 description = "Educational TPU v4-inspired accelerator model and RTL scaffold"
 requires-python = ">=3.11"
-dependencies = ["numpy>=1.24", "pytest>=8", "cocotb>=1.9"]
+dependencies = [
+    "numpy>=1.24",
+    "pytest>=8",
+    "cocotb>=1.9",
+    "torch>=2.12",
+    "transformers>=5.9",
+    "accelerate>=1.13",
+]
+
+[project.scripts]
+qwen-chat = "virtual_tpu.qwen.chat:main"
 
 [tool.setuptools]
 packages = ["virtual_tpu", "virtual_tpu.archsim", "virtual_tpu.archsim.network", "virtual_tpu.layout", "virtual_tpu.qwen", "compiler"]

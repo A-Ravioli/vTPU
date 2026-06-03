@@ -138,13 +138,16 @@ def _linear_tiled(
     out_f32_addr: int,
     weight: np.ndarray,
     vmem_tile_addr: int,
-    k_tile: int = 16,
-    n_tile: int = 16,
+    k_tile: int | None = None,
+    n_tile: int | None = None,
 ) -> None:
     """Lower y = a[1,K] @ W[K,N] using packed BF16 W tiles."""
 
     w = np.asarray(weight, dtype=np.float32)
     k_total, n_total = w.shape
+    default_tile = int(os.getenv("QWEN_MXU_DIM", "16"))
+    k_tile = default_tile if k_tile is None else k_tile
+    n_tile = default_tile if n_tile is None else n_tile
     for n0 in range(0, n_total, n_tile):
         nt = min(n_tile, n_total - n0)
         for k0 in range(0, k_total, k_tile):
@@ -413,6 +416,341 @@ def _build_tiny_full_token_artifacts(out_dir: Path) -> dict:
     return run
 
 
+def _build_0p8b_token_artifacts(out_dir: Path, *, autoregressive: bool = False) -> dict:
+    """Emit a full-shape one-token 0.8B matmul stream for the fast BF16 harness.
+
+    The current ISA keeps matmul operands in 16-bit VMEM address fields. For the
+    fast simulator target we therefore reuse a compact static scratch plan and
+    stream all full-shape 128-wide BF16 tiles through the same VMEM slots. The
+    HBM image is intentionally sparse/zero-filled: it validates preload,
+    instruction depth, chip scheduling, counters, and selected-output plumbing
+    without spending minutes MMIO-poking a multi-GB random model.
+    """
+
+    cfg = qwen35_0p8b()
+    tile = int(os.getenv("QWEN_MXU_DIM", "128"))
+    if tile <= 0 or tile > 128:
+        raise ValueError("0p8b_token requires 1 <= QWEN_MXU_DIM <= 128")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    program: list[Instruction] = []
+
+    a_addr = 0x0000
+    b_addr = 0x2000
+    c_addr = 0xA000
+    hbm_zero = 0x0000
+    hbm_out = 0x10000
+    selected_logits = np.array([0, 1, 42, cfg.vocab - 1], dtype=np.int32)
+    expected = np.zeros(selected_logits.shape, dtype=np.float32)
+
+    max_b_bytes = tile * tile * 2
+    image = bytearray(hbm_out + expected.size * 4)
+    manifest = {
+        "decode_input_tile": TensorRecord(offset=hbm_zero, shape=(cfg.d_model,), count=cfg.d_model, dtype="bf16"),
+        "zero_weight_tile": TensorRecord(offset=hbm_zero, shape=(tile, tile), count=tile * tile, dtype="bf16"),
+        "selected_logits": TensorRecord(offset=hbm_out, shape=tuple(expected.shape), count=int(expected.size), dtype="float32"),
+    }
+
+    program.append(_dma_h2v(hbm_zero, a_addr, cfg.d_model * 2))
+    program.append(_dma_h2v(hbm_zero, b_addr, max_b_bytes))
+    program.append(barrier(UnitMask.DMA))
+
+    def linear(d_in: int, d_out: int) -> None:
+        for _n0 in range(0, d_out, tile):
+            nt = min(tile, d_out - _n0)
+            for k0 in range(0, d_in, tile):
+                kt = min(tile, d_in - k0)
+                program.append(
+                    matmul(
+                        dst_addr=c_addr,
+                        src_a_addr=a_addr,
+                        src_b_addr=b_addr,
+                        m=1,
+                        n=nt,
+                        k=kt,
+                        bf16=True,
+                        accumulate=k0 != 0,
+                    )
+                )
+
+    def deltanet_state_ops() -> None:
+        for _h in range(cfg.dn_v_heads):
+            program.append(matmul(dst_addr=0x0000, src_a_addr=a_addr, src_b_addr=b_addr, m=tile, n=1, k=tile, bf16=True))
+            program.append(matmul(dst_addr=0x0000, src_a_addr=a_addr, src_b_addr=b_addr, m=tile, n=tile, k=1, bf16=True))
+            program.append(matmul(dst_addr=0x0000, src_a_addr=a_addr, src_b_addr=b_addr, m=tile, n=1, k=tile, bf16=True))
+
+    for li in range(cfg.n_layers):
+        linear(cfg.d_model, cfg.d_ff)   # MLP gate
+        linear(cfg.d_model, cfg.d_ff)   # MLP up
+        linear(cfg.d_ff, cfg.d_model)   # MLP down
+        if cfg.is_attention_layer(li):
+            linear(cfg.d_model, cfg.q_dim)
+            linear(cfg.d_model, cfg.kv_dim)
+            linear(cfg.d_model, cfg.kv_dim)
+            linear(cfg.q_dim, cfg.d_model)
+            linear(cfg.d_model, cfg.q_dim)
+        else:
+            dn_qk = cfg.dn_qk_heads * cfg.dn_head_dim
+            dn_v = cfg.dn_v_heads * cfg.dn_head_dim
+            linear(cfg.d_model, dn_qk)
+            linear(cfg.d_model, dn_qk)
+            linear(cfg.d_model, dn_v)
+            linear(dn_v, cfg.d_model)
+            linear(cfg.d_model, dn_v)
+            deltanet_state_ops()
+    linear(cfg.d_model, cfg.vocab)
+
+    program.extend(
+        [
+            barrier(UnitMask.MXU),
+            _dma_v2h(hbm_out, c_addr, expected.size * 4),
+            barrier(UnitMask.DMA),
+            halt(),
+        ]
+    )
+
+    image_path = out_dir / "weights.hbm"
+    manifest_path = out_dir / "weights.manifest.json"
+    program_path = out_dir / "program.hex"
+    expected_path = out_dir / "expected.npz"
+    run_path = out_dir / "run.json"
+
+    image_path.write_bytes(bytes(image))
+    program_path.write_text(emit_hex(program) + "\n", encoding="utf-8")
+    np.savez(expected_path, logits_tile=expected, selected_logits=selected_logits)
+    cost = per_token_cost(cfg, tile=tile)
+    workload = "0p8b_autoregressive" if autoregressive else "0p8b_token"
+    decode_steps = int(os.getenv("QWEN_DECODE_STEPS", "4"))
+    prompt_token = int(os.getenv("QWEN_PROMPT_TOKEN", "0"))
+    run = {
+        "workload": workload,
+        "qwen_config": asdict(cfg),
+        "hbm_image": str(image_path),
+        "hbm_bytes": max(_align_up(len(image), 4096), 1 << 20),
+        "program_hex": str(program_path),
+        "expected_npz": str(expected_path),
+        "output": {"offset": hbm_out, "dtype": "float32", "shape": list(expected.shape), "bytes": expected.size * 4},
+        "selected_logits": selected_logits.tolist(),
+        "executable_slice": {
+            "kind": "qwen_0p8b_full_shape_zero_weight_token_graph",
+            "tile": tile,
+            "matmul_instructions": cost["matmul_instr"],
+            "macs": cost["macs"],
+        },
+        "program_instructions": len(program),
+        "full_token_cost": cost,
+        "weight_source": os.getenv("QWEN_WEIGHT_SOURCE", "random"),
+        "model_dir": os.getenv("QWEN_MODEL_DIR", ""),
+    }
+    if autoregressive:
+        run["autoregressive"] = {
+            "prompt_tokens": [prompt_token],
+            "decode_steps": decode_steps,
+            "expected_generated_tokens": [prompt_token] + [int(selected_logits[0])] * decode_steps,
+            "selection": "greedy_argmax_over_selected_logits",
+            "tie_break": "first_selected_logit",
+        }
+    manifest_path.write_text(
+        json.dumps({"image_bytes": len(image), "align": 64, "tensors": {name: asdict(rec) for name, rec in manifest.items()}}, indent=2),
+        encoding="utf-8",
+    )
+    run_path.write_text(json.dumps(run, indent=2), encoding="utf-8")
+    return run
+
+
+def _build_0p8b_real_lm_head_artifacts(out_dir: Path) -> dict:
+    from virtual_tpu.qwen.real_infer import DEFAULT_QWEN35_0P8B_DIR, RealQwen35
+
+    cfg = qwen35_0p8b()
+    model_dir = Path(os.getenv("QWEN_MODEL_DIR", str(DEFAULT_QWEN35_0P8B_DIR)))
+    token = int(os.getenv("QWEN_PROMPT_TOKEN", "0"))
+    selected_logits = np.array(
+        [int(x) for x in os.getenv("QWEN_SELECTED_LOGITS", f"0,1,42,{cfg.vocab - 1}").split(",") if x],
+        dtype=np.int32,
+    )
+
+    real = RealQwen35(model_dir)
+    try:
+        hidden = real.forward_token_hidden(token).astype(np.float32)
+        selected_embed = np.stack(
+            [real.tensors.bf16_row("model.language_model.embed_tokens.weight", int(idx)) for idx in selected_logits],
+            axis=0,
+        ).astype(np.float32)
+    finally:
+        real.close()
+
+    hidden_bf16 = _bf16_round(hidden)
+    weight = _bf16_round(selected_embed).T
+    expected = (hidden_bf16 @ weight).astype(np.float32)
+
+    hbm = _HBMBuilder()
+    program: list[Instruction] = []
+    A = 0x0000
+    B = 0x2000
+    C = 0x8000
+    hbm_hidden = hbm.bf16("decode_input_tile", hidden_bf16)
+    hbm_weight = hbm.bf16("lm_head.selected_weight", weight)
+    program.append(_dma_h2v(hbm_hidden, A, hidden_bf16.size * 2))
+    program.append(_dma_h2v(hbm_weight, B, weight.size * 2))
+    program.append(barrier(UnitMask.DMA))
+    program.append(matmul(dst_addr=C, src_a_addr=A, src_b_addr=B, m=1, n=expected.size, k=cfg.d_model, bf16=True))
+    program.append(barrier(UnitMask.MXU))
+    hbm_out = hbm.reserve_f32("output_logits_tile", tuple(expected.shape))
+    program.append(_dma_v2h(hbm_out, C, expected.size * 4))
+    program.append(barrier(UnitMask.DMA))
+    program.append(halt())
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    image_path = out_dir / "weights.hbm"
+    manifest_path = out_dir / "weights.manifest.json"
+    program_path = out_dir / "program.hex"
+    expected_path = out_dir / "expected.npz"
+    run_path = out_dir / "run.json"
+    image_path.write_bytes(bytes(hbm.image))
+    program_path.write_text(emit_hex(program) + "\n", encoding="utf-8")
+    np.savez(expected_path, logits_tile=expected, selected_logits=selected_logits, hidden_bf16=hidden_bf16)
+    run = {
+        "workload": "0p8b_real_lm_head",
+        "qwen_config": asdict(cfg),
+        "hbm_image": str(image_path),
+        "hbm_bytes": max(_align_up(len(hbm.image), 4096), 1 << 20),
+        "program_hex": str(program_path),
+        "expected_npz": str(expected_path),
+        "output": {"offset": hbm_out, "dtype": "float32", "shape": list(expected.shape), "bytes": expected.size * 4},
+        "selected_logits": selected_logits.tolist(),
+        "executable_slice": {
+            "kind": "qwen_0p8b_real_checkpoint_hidden_selected_lm_head",
+            "m": 1,
+            "k": cfg.d_model,
+            "n": int(expected.size),
+            "macs": int(cfg.d_model * expected.size),
+        },
+        "program_instructions": len(program),
+        "weight_source": "safetensors",
+        "model_dir": str(model_dir),
+        "prompt_token": token,
+    }
+    manifest_path.write_text(
+        json.dumps({"image_bytes": len(hbm.image), "align": 64, "tensors": {name: asdict(rec) for name, rec in hbm.manifest.items()}}, indent=2),
+        encoding="utf-8",
+    )
+    run_path.write_text(json.dumps(run, indent=2), encoding="utf-8")
+    return run
+
+
+def _build_0p8b_real_mlp_artifacts(out_dir: Path) -> dict:
+    from virtual_tpu.qwen.real_infer import DEFAULT_QWEN35_0P8B_DIR, RealQwen35, _rmsnorm, _silu
+
+    cfg = qwen35_0p8b()
+    model_dir = Path(os.getenv("QWEN_MODEL_DIR", str(DEFAULT_QWEN35_0P8B_DIR)))
+    token = int(os.getenv("QWEN_PROMPT_TOKEN", "0"))
+    layer = int(os.getenv("QWEN_LAYER", "0"))
+    mid = int(os.getenv("QWEN_MLP_INTERMEDIATE", str(cfg.d_ff)))
+    out_dim = int(os.getenv("QWEN_MLP_OUT_DIM", str(cfg.d_model)))
+    if layer < 0 or layer >= cfg.n_layers:
+        raise ValueError(f"QWEN_LAYER must be in [0, {cfg.n_layers})")
+    if mid <= 0 or mid > cfg.d_ff:
+        raise ValueError(f"QWEN_MLP_INTERMEDIATE must be in [1, {cfg.d_ff}]")
+    if out_dim <= 0 or out_dim > cfg.d_model:
+        raise ValueError(f"QWEN_MLP_OUT_DIM must be in [1, {cfg.d_model}]")
+
+    real = RealQwen35(model_dir)
+    try:
+        x = real.tensors.bf16_row("model.language_model.embed_tokens.weight", token).astype(np.float32)
+        for li in range(layer):
+            h = _rmsnorm(x, real.layer_w(li, "input_layernorm.weight"), real.eps)
+            mix = real._full_attention_context1(h, li) if (li % 4) == 3 else real._linear_attention_context1(h, li)
+            x = x + mix
+            h = _rmsnorm(x, real.layer_w(li, "post_attention_layernorm.weight"), real.eps)
+            gate = real.layer_linear(h, li, "mlp.gate_proj.weight")
+            up = real.layer_linear(h, li, "mlp.up_proj.weight")
+            x = x + real.layer_linear(_silu(gate) * up, li, "mlp.down_proj.weight")
+        h = _rmsnorm(x, real.layer_w(layer, "input_layernorm.weight"), real.eps)
+        mix = real._full_attention_context1(h, layer) if (layer % 4) == 3 else real._linear_attention_context1(h, layer)
+        mlp_input = _rmsnorm(x + mix, real.layer_w(layer, "post_attention_layernorm.weight"), real.eps).astype(np.float32)
+        gate_w = real.layer_w(layer, "mlp.gate_proj.weight").T[:, :mid]
+        up_w = real.layer_w(layer, "mlp.up_proj.weight").T[:, :mid]
+        down_w = real.layer_w(layer, "mlp.down_proj.weight").T[:mid, :out_dim]
+    finally:
+        real.close()
+
+    x_bf16 = _bf16_round(mlp_input)
+    gate_w_bf16 = _bf16_round(gate_w)
+    up_w_bf16 = _bf16_round(up_w)
+    down_w_bf16 = _bf16_round(down_w)
+    gate = x_bf16 @ gate_w_bf16
+    up = x_bf16 @ up_w_bf16
+    hidden = _silu(gate) * up
+    expected = (_bf16_round(hidden) @ down_w_bf16).astype(np.float32)
+
+    hbm = _HBMBuilder()
+    program: list[Instruction] = []
+    WEIGHT_TILE = 0x0000
+    HIDDEN = 0x0000
+    X = 0x8000
+    HIDDEN_BF16 = 0x8000
+    GATE = 0x8800
+    OUT = 0xA000
+    UP = 0xC000
+
+    hbm_x = hbm.bf16("decode_input_tile", x_bf16)
+    program.append(_dma_h2v(hbm_x, X, x_bf16.size * 2))
+    program.append(barrier(UnitMask.DMA))
+    _linear_tiled(program, hbm, name=f"layers.{layer}.mlp.gate_proj", a_bf16_addr=X, out_f32_addr=GATE, weight=gate_w_bf16, vmem_tile_addr=WEIGHT_TILE)
+    _linear_tiled(program, hbm, name=f"layers.{layer}.mlp.up_proj", a_bf16_addr=X, out_f32_addr=UP, weight=up_w_bf16, vmem_tile_addr=WEIGHT_TILE)
+    program.append(vector_op(dst_addr=GATE, src0_addr=GATE, length=mid, op=VectorOp.FSILU))
+    program.append(barrier(UnitMask.MXU | UnitMask.VPU | UnitMask.REDUCE))
+    program.append(vector_op(dst_addr=HIDDEN, src0_addr=GATE, src1_addr=UP, length=mid, op=VectorOp.FMUL))
+    program.append(barrier(UnitMask.MXU | UnitMask.VPU | UnitMask.REDUCE))
+    _quantize(program, HIDDEN, HIDDEN_BF16, mid)
+    _linear_tiled(program, hbm, name=f"layers.{layer}.mlp.down_proj", a_bf16_addr=HIDDEN_BF16, out_f32_addr=OUT, weight=down_w_bf16, vmem_tile_addr=WEIGHT_TILE)
+    hbm_out = hbm.reserve_f32("output_logits_tile", tuple(expected.shape))
+    program.append(_dma_v2h(hbm_out, OUT, expected.size * 4))
+    program.append(barrier(UnitMask.DMA))
+    program.append(halt())
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    image_path = out_dir / "weights.hbm"
+    manifest_path = out_dir / "weights.manifest.json"
+    program_path = out_dir / "program.hex"
+    expected_path = out_dir / "expected.npz"
+    run_path = out_dir / "run.json"
+    image_path.write_bytes(bytes(hbm.image))
+    program_path.write_text(emit_hex(program) + "\n", encoding="utf-8")
+    np.savez(expected_path, logits_tile=expected)
+    run = {
+        "workload": "0p8b_real_mlp",
+        "qwen_config": asdict(cfg),
+        "hbm_image": str(image_path),
+        "hbm_bytes": max(_align_up(len(hbm.image), 4096), 1 << 20),
+        "program_hex": str(program_path),
+        "expected_npz": str(expected_path),
+        "output": {"offset": hbm_out, "dtype": "float32", "shape": list(expected.shape), "bytes": expected.size * 4},
+        "executable_slice": {
+            "kind": "qwen_0p8b_real_checkpoint_mlp_block" if mid == cfg.d_ff and out_dim == cfg.d_model else "qwen_0p8b_real_checkpoint_mlp_slice",
+            "layer": layer,
+            "k": cfg.d_model,
+            "n": mid,
+            "out_dim": out_dim,
+            "matmul_instructions": (
+                2 * ((cfg.d_model + 127) // 128) * ((mid + 127) // 128)
+                + ((mid + 127) // 128) * ((out_dim + 127) // 128)
+            ),
+            "macs": int((2 * cfg.d_model * mid) + (mid * out_dim)),
+        },
+        "program_instructions": len(program),
+        "weight_source": "safetensors",
+        "model_dir": str(model_dir),
+        "prompt_token": token,
+    }
+    manifest_path.write_text(
+        json.dumps({"image_bytes": len(hbm.image), "align": 64, "tensors": {name: asdict(rec) for name, rec in hbm.manifest.items()}}, indent=2),
+        encoding="utf-8",
+    )
+    run_path.write_text(json.dumps(run, indent=2), encoding="utf-8")
+    return run
+
+
 def build_qwen_infer_artifacts(out_dir: str | Path, workload: str = "tiny") -> dict:
     """Emit a self-contained RTL workload bundle.
 
@@ -426,9 +764,17 @@ def build_qwen_infer_artifacts(out_dir: str | Path, workload: str = "tiny") -> d
 
     if workload == "tiny_full_token":
         return _build_tiny_full_token_artifacts(Path(out_dir))
+    if workload == "0p8b_token":
+        return _build_0p8b_token_artifacts(Path(out_dir))
+    if workload == "0p8b_autoregressive":
+        return _build_0p8b_token_artifacts(Path(out_dir), autoregressive=True)
+    if workload == "0p8b_real_lm_head":
+        return _build_0p8b_real_lm_head_artifacts(Path(out_dir))
+    if workload == "0p8b_real_mlp":
+        return _build_0p8b_real_mlp_artifacts(Path(out_dir))
 
-    if workload not in {"tiny", "layer_slice", "0p8b_token"}:
-        raise ValueError("workload must be one of: tiny, layer_slice, tiny_full_token, 0p8b_token")
+    if workload not in {"tiny", "layer_slice", "0p8b_token", "0p8b_autoregressive", "0p8b_real_lm_head", "0p8b_real_mlp"}:
+        raise ValueError("workload must be one of: tiny, layer_slice, tiny_full_token, 0p8b_token, 0p8b_autoregressive, 0p8b_real_lm_head, 0p8b_real_mlp")
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)

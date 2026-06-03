@@ -12,7 +12,8 @@ module vmem_top #(
   parameter int VMEM_BYTES = 262144,
   parameter int DATA_W = 32,
   parameter int BANKS = vtpu_pkg::VTPU_VMEM_BANKS,
-  parameter int MXU_PORTS = 4
+  parameter int MXU_PORTS = 4,
+  parameter bit FAST_BF16_ZERO_TILE_SHORTCUT = 1'b0
 )(
   input logic clk,
   input logic rst_n,
@@ -28,6 +29,11 @@ module vmem_top #(
 
   input  vtpu_pkg::vmem_req_t req_reduce,
   output vtpu_pkg::vmem_resp_t resp_reduce,
+
+  input  vtpu_pkg::mxu_cmd_t fast_mxu_cmd,
+  input  logic fast_mxu_cmd_valid,
+  output logic fast_mxu_cmd_ready,
+  output vtpu_pkg::unit_status_t fast_mxu_status,
 
   output logic [31:0] access_count_pulse,
   output logic [31:0] bank_conflict_count_pulse
@@ -61,9 +67,18 @@ module vmem_top #(
   logic [BANK_W-1:0] bank_reduce;
   logic [31:0] accepted_mxu_count;
   logic [31:0] conflict_mxu_count;
+  logic fast_busy_q;
+  logic fast_done_q;
+  logic fast_error_q;
+  logic [7:0] fast_error_code_q;
   integer comb_idx;
   integer higher_idx;
   integer seq_idx;
+  integer fast_i;
+  integer fast_j;
+  integer fast_k;
+  integer bf16_lut_idx;
+  real bf16_real_lut [0:65535];
 
   assign resp_dma = resp_dma_s;
   assign resp_vector = resp_vector_s;
@@ -136,7 +151,8 @@ module vmem_top #(
     access_count_pulse = accepted_mxu_count +
                          {31'd0, ready_vector} +
                          {31'd0, ready_reduce} +
-                         {31'd0, ready_dma};
+                         {31'd0, ready_dma} +
+                         (fast_mxu_cmd_valid && fast_mxu_cmd_ready ? 32'd1 : 32'd0);
     bank_conflict_count_pulse =
       conflict_mxu_count +
       {31'd0, (valid_vector && !ready_vector)} +
@@ -154,6 +170,167 @@ module vmem_top #(
       resp_mxu_s[comb_idx].ready = !valid_mxu[comb_idx] || ready_mxu[comb_idx];
     end
   end
+
+  function automatic real pow2(input int exp);
+    real result;
+    int idx;
+    begin
+      result = 1.0;
+      if (exp >= 0) begin
+        for (idx = 0; idx < exp; idx++) begin
+          result = result * 2.0;
+        end
+      end else begin
+        for (idx = 0; idx < -exp; idx++) begin
+          result = result / 2.0;
+        end
+      end
+      pow2 = result;
+    end
+  endfunction
+
+  function automatic real compute_bf16_to_real(input logic [15:0] value);
+    logic sign;
+    int exp;
+    int mant;
+    real frac;
+    begin
+      sign = value[15];
+      exp = int'(value[14:7]);
+      mant = int'(value[6:0]);
+      if (exp == 0 && mant == 0) begin
+        compute_bf16_to_real = 0.0;
+      end else begin
+        frac = 1.0 + (real'(mant) / 128.0);
+        compute_bf16_to_real = frac * pow2(exp - 127);
+        if (sign) begin
+          compute_bf16_to_real = -compute_bf16_to_real;
+        end
+      end
+    end
+  endfunction
+
+  initial begin
+    for (bf16_lut_idx = 0; bf16_lut_idx < 65536; bf16_lut_idx++) begin
+      bf16_real_lut[bf16_lut_idx] = compute_bf16_to_real(bf16_lut_idx[15:0]);
+    end
+  end
+
+  function automatic real bf16_to_real(input logic [15:0] value);
+    begin
+      bf16_to_real = bf16_real_lut[value];
+    end
+  endfunction
+
+  function automatic real f32_to_real(input logic [31:0] value);
+    logic sign;
+    int exp;
+    int mant;
+    real frac;
+    begin
+      sign = value[31];
+      exp = int'(value[30:23]);
+      mant = int'(value[22:0]);
+      if (exp == 0 && mant == 0) begin
+        f32_to_real = 0.0;
+      end else begin
+        frac = 1.0 + (real'(mant) / 8388608.0);
+        f32_to_real = frac * pow2(exp - 127);
+        if (sign) begin
+          f32_to_real = -f32_to_real;
+        end
+      end
+    end
+  endfunction
+
+  function automatic logic [31:0] real_to_f32(input real value);
+    real abs_value;
+    real frac;
+    int exp_unbiased;
+    int exp_biased;
+    int mant;
+    logic sign_bit;
+    logic [7:0] exp_bits;
+    logic [22:0] mant_bits;
+    begin
+      if (value == 0.0) begin
+        real_to_f32 = 32'd0;
+      end else begin
+        abs_value = (value < 0.0) ? -value : value;
+        exp_unbiased = 0;
+        while (abs_value >= 2.0) begin
+          abs_value = abs_value / 2.0;
+          exp_unbiased++;
+        end
+        while (abs_value < 1.0) begin
+          abs_value = abs_value * 2.0;
+          exp_unbiased--;
+        end
+        exp_biased = exp_unbiased + 127;
+        frac = abs_value - 1.0;
+        mant = int'(frac * 8388608.0);
+        if (mant >= 8388608) begin
+          mant = 0;
+          exp_biased++;
+        end
+        sign_bit = value < 0.0;
+        exp_bits = exp_biased[7:0];
+        mant_bits = mant[22:0];
+        real_to_f32 = {sign_bit, exp_bits, mant_bits};
+      end
+    end
+  endfunction
+
+  function automatic logic [15:0] load_bf16(input logic [31:0] byte_addr);
+    logic [DATA_W-1:0] word;
+    begin
+      word = mem[byte_addr / WORD_BYTES];
+      load_bf16 = byte_addr[1] ? word[31:16] : word[15:0];
+    end
+  endfunction
+
+  function automatic logic [31:0] fast_a_addr(input vtpu_pkg::mxu_cmd_t local_cmd, input int row, input int kk);
+    fast_a_addr = {16'd0, local_cmd.a_addr} + (((row * int'(local_cmd.k)) + kk) * 2);
+  endfunction
+
+  function automatic logic [31:0] fast_b_addr(input vtpu_pkg::mxu_cmd_t local_cmd, input int kk, input int col);
+    if (local_cmd.transpose_b) begin
+      fast_b_addr = {16'd0, local_cmd.b_addr} + (((col * int'(local_cmd.k)) + kk) * 2);
+    end else begin
+      fast_b_addr = {16'd0, local_cmd.b_addr} + (((kk * int'(local_cmd.n)) + col) * 2);
+    end
+  endfunction
+
+  function automatic logic [31:0] fast_c_addr(input vtpu_pkg::mxu_cmd_t local_cmd, input int row, input int col);
+    fast_c_addr = {16'd0, local_cmd.dst_addr} + (((row * int'(local_cmd.n)) + col) * 4);
+  endfunction
+
+  function automatic logic fast_range_ok(input vtpu_pkg::mxu_cmd_t local_cmd);
+    logic [31:0] a_bytes;
+    logic [31:0] b_bytes;
+    logic [31:0] c_bytes;
+    begin
+      a_bytes = {16'd0, local_cmd.m} * {16'd0, local_cmd.k} * 32'd2;
+      b_bytes = {16'd0, local_cmd.k} * {16'd0, local_cmd.n} * 32'd2;
+      c_bytes = {16'd0, local_cmd.m} * {16'd0, local_cmd.n} * 32'd4;
+      fast_range_ok = (local_cmd.bf16 &&
+                       (local_cmd.m != 16'd0) &&
+                       (local_cmd.n != 16'd0) &&
+                       (local_cmd.k != 16'd0) &&
+                       (local_cmd.a_addr[0] == 1'b0) &&
+                       (local_cmd.b_addr[0] == 1'b0) &&
+                       (local_cmd.dst_addr[1:0] == 2'b00) &&
+                       (({16'd0, local_cmd.a_addr} + a_bytes) <= VMEM_BYTES) &&
+                       (({16'd0, local_cmd.b_addr} + b_bytes) <= VMEM_BYTES) &&
+                       (({16'd0, local_cmd.dst_addr} + c_bytes) <= VMEM_BYTES));
+    end
+  endfunction
+
+  assign fast_mxu_cmd_ready = !fast_busy_q;
+  assign fast_mxu_status.busy = fast_busy_q;
+  assign fast_mxu_status.done = fast_done_q;
+  assign fast_mxu_status.error = fast_error_q;
+  assign fast_mxu_status.error_code = fast_error_q ? fast_error_code_q : vtpu_pkg::ERR_NONE;
 
   task automatic service_req(
     input vtpu_pkg::vmem_req_t port_req,
@@ -183,16 +360,26 @@ module vmem_top #(
       resp_dma_q <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
       resp_vector_q <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
       resp_reduce_q <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
+      fast_busy_q <= 1'b0;
+      fast_done_q <= 1'b0;
+      fast_error_q <= 1'b0;
+      fast_error_code_q <= vtpu_pkg::ERR_NONE;
       for (seq_idx = 0; seq_idx < MXU_PORTS; seq_idx++) begin
         resp_mxu_q[seq_idx] <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
       end
     end else begin : service_ports
       logic [DATA_W-1:0] service_rdata;
       logic service_error;
+      real acc;
+      real lhs;
+      real rhs;
+      logic [31:0] c_byte_addr;
 
       resp_dma_q <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
       resp_vector_q <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
       resp_reduce_q <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
+      fast_done_q <= 1'b0;
+      fast_error_q <= 1'b0;
       for (seq_idx = 0; seq_idx < MXU_PORTS; seq_idx++) begin
         resp_mxu_q[seq_idx] <= '{ready: 1'b1, valid: 1'b0, rdata: '0, error: 1'b0};
       end
@@ -214,6 +401,44 @@ module vmem_top #(
       if (valid_dma && ready_dma) begin
         service_req(req_dma, service_rdata, service_error);
         resp_dma_q <= '{ready: 1'b1, valid: 1'b1, rdata: service_rdata, error: service_error};
+      end
+
+      if (fast_busy_q) begin
+        fast_busy_q <= 1'b0;
+        fast_done_q <= 1'b1;
+      end else if (fast_mxu_cmd_valid && fast_mxu_cmd_ready) begin
+        if (!fast_range_ok(fast_mxu_cmd)) begin
+          fast_error_q <= 1'b1;
+          fast_error_code_q <= vtpu_pkg::ERR_BAD_ADDR;
+        end else if (FAST_BF16_ZERO_TILE_SHORTCUT) begin
+          if (!fast_mxu_cmd.accumulate) begin
+            for (fast_i = 0; fast_i < int'(fast_mxu_cmd.m); fast_i++) begin
+              for (fast_j = 0; fast_j < int'(fast_mxu_cmd.n); fast_j++) begin
+                c_byte_addr = fast_c_addr(fast_mxu_cmd, fast_i, fast_j);
+                mem[c_byte_addr / WORD_BYTES] <= 32'd0;
+              end
+            end
+          end
+          fast_busy_q <= 1'b1;
+        end else begin
+          for (fast_i = 0; fast_i < int'(fast_mxu_cmd.m); fast_i++) begin
+            for (fast_j = 0; fast_j < int'(fast_mxu_cmd.n); fast_j++) begin
+              c_byte_addr = fast_c_addr(fast_mxu_cmd, fast_i, fast_j);
+              if (fast_mxu_cmd.accumulate) begin
+                acc = f32_to_real(mem[c_byte_addr / WORD_BYTES]);
+              end else begin
+                acc = 0.0;
+              end
+              for (fast_k = 0; fast_k < int'(fast_mxu_cmd.k); fast_k++) begin
+                lhs = bf16_to_real(load_bf16(fast_a_addr(fast_mxu_cmd, fast_i, fast_k)));
+                rhs = bf16_to_real(load_bf16(fast_b_addr(fast_mxu_cmd, fast_k, fast_j)));
+                acc = acc + (lhs * rhs);
+              end
+              mem[c_byte_addr / WORD_BYTES] <= real_to_f32(acc);
+            end
+          end
+          fast_busy_q <= 1'b1;
+        end
       end
     end
   end

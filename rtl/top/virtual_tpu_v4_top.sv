@@ -21,7 +21,9 @@ module virtual_tpu_v4_top #(
   parameter int INSTR_DEPTH = 1024,
   parameter bit PHYSICAL_MEMORIES = 1'b0,
   parameter bit SIM_LOADABLE_HBM = 1'b0,
-  parameter bit SIM_MMAP_HBM = 1'b0
+  parameter bit SIM_MMAP_HBM = 1'b0,
+  parameter bit FAST_BF16_MXU = 1'b0,
+  parameter bit FAST_BF16_ZERO_TILE_SHORTCUT = 1'b0
 )(
   input logic clk,
   input logic rst_n,
@@ -53,7 +55,7 @@ module virtual_tpu_v4_top #(
   logic counter_clear_q;
 
   logic instr_fetch_en;
-  logic [15:0] pc;
+  logic [31:0] pc;
   logic [127:0] instr_raw;
   logic [31:0] instr_host_rdata;
   logic instr_fetch_error;
@@ -177,21 +179,21 @@ module virtual_tpu_v4_top #(
     counter_read_index = '0;
     hbm_word_in_range = 1'b0;
 
-    if (instr_addr_hit) begin
-      host_offset = host_req.addr - INSTR_BASE;
-      instr_host_addr = host_offset[INSTR_ADDR_W+3:4];
-      instr_host_lane = host_offset[3:2];
-    end else if (hbm_addr_hit) begin
+    if (hbm_addr_hit) begin
       host_offset = host_req.addr - HBM_BASE;
       hbm_host_addr = host_offset;
       hbm_word_in_range = ((host_offset + 32'd3) < HBM_BYTES);
+    end else if (instr_addr_hit) begin
+      host_offset = host_req.addr - INSTR_BASE;
+      instr_host_addr = host_offset[INSTR_ADDR_W+3:4];
+      instr_host_lane = host_offset[3:2];
     end else if (counter_addr_hit) begin
       counter_offset = host_req.addr - COUNTER_BASE;
       counter_read_index = counter_offset[COUNTER_ADDR_W+2:3];
     end
   end
 
-  assign instr_host_we = host_req_valid && host_req.write && host_aligned && instr_addr_hit && !chip_units_busy;
+  assign instr_host_we = host_req_valid && host_req.write && host_aligned && instr_addr_hit && !hbm_addr_hit && !chip_units_busy;
   assign hbm_host_we = host_req_valid && host_req.write && host_aligned && hbm_addr_hit && hbm_word_in_range && !chip_units_busy;
 
   generate
@@ -417,7 +419,9 @@ module virtual_tpu_v4_top #(
     .DATA_W(DATA_W),
     .ACC_W(ACC_W),
     .VMEM_BYTES(VMEM_BYTES),
-    .PHYSICAL_MEMORIES(PHYSICAL_MEMORIES)
+    .PHYSICAL_MEMORIES(PHYSICAL_MEMORIES),
+    .FAST_BF16_MXU(FAST_BF16_MXU),
+    .FAST_BF16_ZERO_TILE_SHORTCUT(FAST_BF16_ZERO_TILE_SHORTCUT)
   ) u_tensor_core0 (
     .clk(clk),
     .rst_n(rst_n),
@@ -446,7 +450,9 @@ module virtual_tpu_v4_top #(
     .DATA_W(DATA_W),
     .ACC_W(ACC_W),
     .VMEM_BYTES(VMEM_BYTES),
-    .PHYSICAL_MEMORIES(PHYSICAL_MEMORIES)
+    .PHYSICAL_MEMORIES(PHYSICAL_MEMORIES),
+    .FAST_BF16_MXU(FAST_BF16_MXU),
+    .FAST_BF16_ZERO_TILE_SHORTCUT(FAST_BF16_ZERO_TILE_SHORTCUT)
   ) u_tensor_core1 (
     .clk(clk),
     .rst_n(rst_n),
@@ -529,7 +535,7 @@ module virtual_tpu_v4_top #(
             counter_clear_q <= 1'b1;
           end
           if (host_req.write && host_req.wdata[0]) begin
-            if (chip_units_busy) begin
+            if (chip_units_busy && !done) begin
               host_resp_q.error <= 1'b1;
             end else begin
               start_pulse_q <= 1'b1;
@@ -541,16 +547,10 @@ module virtual_tpu_v4_top #(
         end else if (error_addr_hit) begin
           host_resp_q.rdata <= {24'd0, control_error_code};
         end else if (pc_addr_hit) begin
-          host_resp_q.rdata <= {16'd0, pc};
+          host_resp_q.rdata <= pc;
         end else if (counter_addr_hit) begin
           host_resp_q.rdata <= counter_offset[2] ? counter_read_value[63:32] : counter_read_value[31:0];
           if (host_req.write) host_resp_q.error <= 1'b1;
-        end else if (instr_addr_hit) begin
-          if (host_req.write) begin
-            if (chip_units_busy) host_resp_q.error <= 1'b1;
-          end else begin
-            host_resp_q.rdata <= instr_host_rdata;
-          end
         end else if (hbm_addr_hit) begin
           if (!hbm_word_in_range) begin
             host_resp_q.error <= 1'b1;
@@ -558,6 +558,12 @@ module virtual_tpu_v4_top #(
             if (chip_units_busy) host_resp_q.error <= 1'b1;
           end else begin
             host_resp_q.rdata <= hbm_host_rdata;
+          end
+        end else if (instr_addr_hit) begin
+          if (host_req.write) begin
+            if (chip_units_busy) host_resp_q.error <= 1'b1;
+          end else begin
+            host_resp_q.rdata <= instr_host_rdata;
           end
         end else begin
           host_resp_q.error <= 1'b1;

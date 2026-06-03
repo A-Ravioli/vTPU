@@ -15,7 +15,7 @@ module control_fsm #(
   input  logic rst_n,
   input  logic start,
   output logic instr_fetch_en,
-  output logic [15:0] pc,
+  output logic [31:0] pc,
   input  vtpu_pkg::decoded_instr_t decoded,
   input  logic illegal,
   input  logic [7:0] decode_error_code,
@@ -201,7 +201,7 @@ module control_fsm #(
   task automatic retire_and_fetch;
     begin
       instr_retired <= 1'b1;
-      pc <= pc + 16'd1;
+      pc <= pc + 32'd1;
       state_q <= ST_FETCH;
     end
   endtask
@@ -220,7 +220,7 @@ module control_fsm #(
 
     if (!rst_n) begin
       state_q <= ST_IDLE;
-      pc <= 16'd0;
+      pc <= 32'd0;
       barrier_mask_q <= 8'd0;
       issue_tc_mask_q <= '0;
       issued_tc_mask_q <= '0;
@@ -237,7 +237,7 @@ module control_fsm #(
 
       if (start && ((state_q == ST_IDLE) || (state_q == ST_HALT) || (state_q == ST_ERROR))) begin
         state_q <= ST_FETCH;
-        pc <= 16'd0;
+        pc <= 32'd0;
         barrier_mask_q <= 8'd0;
         issue_tc_mask_q <= '0;
         issued_tc_mask_q <= '0;
@@ -249,7 +249,7 @@ module control_fsm #(
       end else begin
         unique case (state_q)
           ST_IDLE: begin
-            pc <= 16'd0;
+            pc <= 32'd0;
           end
           ST_FETCH: begin
             state_q <= ST_DECODE;
@@ -265,7 +265,7 @@ module control_fsm #(
                 state_q <= ST_WAIT_HALT;
               end else begin
                 instr_retired <= 1'b1;
-                pc <= pc + 16'd1;
+                pc <= pc + 32'd1;
                 state_q <= ST_HALT;
               end
             end else if (decoded.opcode == vtpu_pkg::OPC_BARRIER) begin
@@ -324,7 +324,7 @@ module control_fsm #(
           ST_WAIT_HALT: begin
             if (!any_unit_busy()) begin
               instr_retired <= 1'b1;
-              pc <= pc + 16'd1;
+              pc <= pc + 32'd1;
               state_q <= ST_HALT;
             end
           end
