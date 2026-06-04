@@ -1,0 +1,210 @@
+{
+  "floorplan": {
+    "blocks": [
+      {
+        "fixed": false,
+        "kind": "logic",
+        "name": "control",
+        "rect": {
+          "h": 260,
+          "w": 340,
+          "x": 690,
+          "y": 1360
+        }
+      },
+      {
+        "fixed": false,
+        "kind": "logic",
+        "name": "dma",
+        "rect": {
+          "h": 260,
+          "w": 340,
+          "x": 1010,
+          "y": 1080
+        }
+      },
+      {
+        "fixed": false,
+        "kind": "sram",
+        "name": "cmem",
+        "rect": {
+          "h": 300,
+          "w": 440,
+          "x": 960,
+          "y": 770
+        }
+      },
+      {
+        "fixed": false,
+        "kind": "sram",
+        "name": "instr_mem",
+        "rect": {
+          "h": 260,
+          "w": 360,
+          "x": 650,
+          "y": 1090
+        }
+      },
+      {
+        "fixed": true,
+        "kind": "io",
+        "name": "hbm_if",
+        "rect": {
+          "h": 420,
+          "w": 360,
+          "x": 1680,
+          "y": 850
+        }
+      },
+      {
+        "fixed": false,
+        "kind": "compute",
+        "name": "tc0_compute",
+        "rect": {
+          "h": 360,
+          "w": 360,
+          "x": 340,
+          "y": 400
+        }
+      },
+      {
+        "fixed": false,
+        "kind": "sram",
+        "name": "tc0_vmem",
+        "rect": {
+          "h": 300,
+          "w": 520,
+          "x": 310,
+          "y": 770
+        }
+      },
+      {
+        "fixed": false,
+        "kind": "compute",
+        "name": "tc1_compute",
+        "rect": {
+          "h": 360,
+          "w": 360,
+          "x": 1460,
+          "y": 490
+        }
+      },
+      {
+        "fixed": false,
+        "kind": "sram",
+        "name": "tc1_vmem",
+        "rect": {
+          "h": 300,
+          "w": 520,
+          "x": 1380,
+          "y": 1270
+        }
+      }
+    ],
+    "core": {
+      "h": 2000,
+      "w": 2000,
+      "x": 100,
+      "y": 100
+    },
+    "design": {
+      "array_k": 2,
+      "array_m": 2,
+      "array_n": 2,
+      "clock_period_ns": 20.0,
+      "cmem_bytes": 256,
+      "hbm_bytes": 256,
+      "instr_depth": 16,
+      "mxus_per_tc": 4,
+      "name": "vtpu_pd_tiny",
+      "num_tensor_cores": 2,
+      "vmem_bytes": 256
+    },
+    "die": {
+      "h": 2200,
+      "w": 2200,
+      "x": 0,
+      "y": 0
+    },
+    "grid": 10,
+    "nets": [
+      {
+        "name": "host_control",
+        "pins": [
+          "control",
+          "instr_mem",
+          "dma"
+        ],
+        "weight": 1.0
+      },
+      {
+        "name": "dma_hbm",
+        "pins": [
+          "dma",
+          "hbm_if"
+        ],
+        "weight": 2.0
+      },
+      {
+        "name": "dma_cmem",
+        "pins": [
+          "dma",
+          "cmem"
+        ],
+        "weight": 1.5
+      },
+      {
+        "name": "cmem_tc0",
+        "pins": [
+          "cmem",
+          "tc0_vmem"
+        ],
+        "weight": 2.0
+      },
+      {
+        "name": "cmem_tc1",
+        "pins": [
+          "cmem",
+          "tc1_vmem"
+        ],
+        "weight": 2.0
+      },
+      {
+        "name": "tc0_local",
+        "pins": [
+          "tc0_vmem",
+          "tc0_compute"
+        ],
+        "weight": 4.0
+      },
+      {
+        "name": "tc1_local",
+        "pins": [
+          "tc1_vmem",
+          "tc1_compute"
+        ],
+        "weight": 4.0
+      },
+      {
+        "name": "control_tc",
+        "pins": [
+          "control",
+          "tc0_compute",
+          "tc1_compute"
+        ],
+        "weight": 1.0
+      }
+    ]
+  },
+  "iteration": 495,
+  "score": {
+    "area": 1124800,
+    "congestion": 0.0,
+    "counter_cost": 0.0,
+    "illegal_penalty": 0.0,
+    "memory_distance": 3540.0,
+    "timing_proxy": 0.177,
+    "total": 26748.72,
+    "wirelength": 12455.0
+  }
+}

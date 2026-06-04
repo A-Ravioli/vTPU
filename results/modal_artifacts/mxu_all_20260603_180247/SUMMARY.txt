@@ -1,0 +1,6 @@
+target=mxu
+step=all
+started_at=20260603_180247
+gds_count=2
+gds=/artifacts/mxu_all_20260603_180247/results/6_1_merged.gds
+gds=/artifacts/mxu_all_20260603_180247/results/6_final.gds

@@ -19,4 +19,4 @@ obj_dir/
 *.log
 *.tmp
 physical/reports/
-results/
+# results/
