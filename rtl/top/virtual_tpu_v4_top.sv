@@ -23,7 +23,8 @@ module virtual_tpu_v4_top #(
   parameter bit SIM_LOADABLE_HBM = 1'b0,
   parameter bit SIM_MMAP_HBM = 1'b0,
   parameter bit FAST_BF16_MXU = 1'b0,
-  parameter bit FAST_BF16_ZERO_TILE_SHORTCUT = 1'b0
+  parameter bit FAST_BF16_ZERO_TILE_SHORTCUT = 1'b0,
+  parameter bit EXTERNAL_HBM = 1'b0
 )(
   input logic clk,
   input logic rst_n,
@@ -33,6 +34,9 @@ module virtual_tpu_v4_top #(
   output logic                 host_req_ready,
   output vtpu_pkg::host_resp_t host_resp,
   output logic                 host_resp_valid,
+
+  output vtpu_pkg::mem_req_t   ext_hbm_req,
+  input  vtpu_pkg::mem_resp_t  ext_hbm_resp,
 
   output logic done,
   output logic busy,
@@ -290,7 +294,14 @@ module virtual_tpu_v4_top #(
   );
 
   generate
-    if (PHYSICAL_MEMORIES) begin : gen_physical_hbm
+    if (EXTERNAL_HBM) begin : gen_external_hbm
+      assign ext_hbm_req = hbm_req;
+      assign hbm_resp = ext_hbm_resp;
+      assign hbm_host_rdata = 32'd0;
+      assign hbm_access_pulse = hbm_req.valid;
+      assign hbm_stall_pulse = hbm_req.valid && !ext_hbm_resp.ready;
+    end else if (PHYSICAL_MEMORIES) begin : gen_physical_hbm
+      assign ext_hbm_req = '0;
       hbm_model_physical #(
         .HBM_BYTES(HBM_BYTES),
         .DATA_W(32),
@@ -310,6 +321,7 @@ module virtual_tpu_v4_top #(
         .stall_pulse(hbm_stall_pulse)
       );
     end else if (SIM_MMAP_HBM) begin : gen_mmap_hbm
+      assign ext_hbm_req = '0;
       hbm_model_mmap #(
         .HBM_BYTES(HBM_BYTES),
         .DATA_W(32),
@@ -329,6 +341,7 @@ module virtual_tpu_v4_top #(
         .stall_pulse(hbm_stall_pulse)
       );
     end else if (SIM_LOADABLE_HBM) begin : gen_loadable_hbm
+      assign ext_hbm_req = '0;
       hbm_model_loadable #(
         .HBM_BYTES(HBM_BYTES),
         .DATA_W(32),
@@ -348,6 +361,7 @@ module virtual_tpu_v4_top #(
         .stall_pulse(hbm_stall_pulse)
       );
     end else begin : gen_behavioral_hbm
+      assign ext_hbm_req = '0;
       hbm_model #(
         .HBM_BYTES(HBM_BYTES),
         .DATA_W(32),

@@ -22,7 +22,11 @@ module vtpu_pd_smoke_top (
 );
   vtpu_pkg::host_req_t host_req;
   vtpu_pkg::host_resp_t host_resp;
+  vtpu_pkg::mem_req_t ext_hbm_req_unused;
+  vtpu_pkg::mem_resp_t ext_hbm_resp_unused;
   logic host_resp_valid_unused;
+
+  assign ext_hbm_resp_unused = '0;
 
   assign host_req.valid = host_req_valid;
   assign host_req.write = host_req_write;
@@ -54,6 +58,8 @@ module vtpu_pd_smoke_top (
     .host_req_ready(host_req_ready),
     .host_resp(host_resp),
     .host_resp_valid(host_resp_valid_unused),
+    .ext_hbm_req(ext_hbm_req_unused),
+    .ext_hbm_resp(ext_hbm_resp_unused),
     .done(done),
     .busy(busy),
     .error(error)
