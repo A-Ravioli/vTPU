@@ -31,7 +31,15 @@ RTL_SOURCES := \
 	rtl/memory/vmem_top.sv \
 	rtl/top/virtual_tpu_v4_top.sv
 
-.PHONY: all test-python test-rtl-unit test-rtl-integration qwen-demo-ui lint physical-lint physical-full-lint physical-synth-check physical-synth-check-docker physical-full-synth-check-docker physical-openroad physical-openroad-docker physical-openroad-synth-odb-docker physical-openroad-floorplan-docker physical-full-openroad-docker physical-full-openroad-floorplan-docker waves clean
+F2_RTL_SOURCES := \
+	$(RTL_SOURCES) \
+	rtl/fpga/vtpu_hbm_axi_adapter.sv \
+	rtl/fpga/vtpu_ocl_axil_bridge.sv \
+	rtl/fpga/axi512_memory_model.sv \
+	rtl/fpga/vtpu_f2_smoke_top.sv \
+	rtl/fpga/vtpu_f2_smoke_sim_top.sv
+
+.PHONY: all test-python test-rtl-unit test-rtl-integration test-f2-smoke lint f2-lint physical-lint physical-full-lint physical-synth-check physical-synth-check-docker physical-full-synth-check-docker physical-openroad physical-openroad-docker physical-openroad-synth-odb-docker physical-openroad-floorplan-docker physical-full-openroad-docker physical-full-openroad-floorplan-docker waves clean
 
 all: test-python test-rtl-unit test-rtl-integration
 
@@ -44,6 +52,14 @@ qwen-demo-ui:
 lint:
 	@if command -v verilator >/dev/null 2>&1; then \
 		verilator --lint-only -Wall --timing --Wno-MULTITOP --Wno-UNUSEDPARAM --Wno-UNUSEDSIGNAL --Wno-BLKSEQ -Irtl/common $(RTL_SOURCES); \
+	else \
+		echo "verilator not installed"; \
+		exit 1; \
+	fi
+
+f2-lint:
+	@if command -v verilator >/dev/null 2>&1; then \
+		verilator --lint-only -Wall --timing --Wno-MULTITOP --Wno-UNUSEDPARAM --Wno-UNUSEDSIGNAL --Wno-BLKSEQ -Irtl/common $(F2_RTL_SOURCES) --top-module vtpu_f2_smoke_sim_top; \
 	else \
 		echo "verilator not installed"; \
 		exit 1; \
@@ -151,6 +167,9 @@ test-rtl-unit: lint
 
 test-rtl-integration: lint
 	PYTHONPATH=$(PYTHONPATH):tests/cocotb $(PYTHON) -m pytest -q tests/rtl/test_chip_runner.py
+
+test-f2-smoke: f2-lint
+	PYTHONPATH=$(PYTHONPATH):tests/cocotb $(PYTHON) -m pytest -q tests/rtl/test_f2_smoke_runner.py
 
 waves:
 	WAVES=1 $(MAKE) test-rtl-unit

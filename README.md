@@ -1,15 +1,6 @@
-# Virtual TPU v4-Inspired Educational Accelerator
+# a virtual tpu
 
-This repository builds an open, educational accelerator inspired by public TPU v4 architecture.
-
-The guiding question is simple:
-
-```text
-How do we execute matrix-heavy ML workloads efficiently enough that data movement,
-memory locality, parallelism, and verification all become first-class design choices?
-```
-
-This repo answers that question by building a small, inspectable machine from first principles: a Python executable contract, a custom ISA, a simulated memory hierarchy, and SystemVerilog RTL that follows the same behavior.
+llms wrote this readme i will fix it i promise
 
 ## Quick Start
 
