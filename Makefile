@@ -31,12 +31,15 @@ RTL_SOURCES := \
 	rtl/memory/vmem_top.sv \
 	rtl/top/virtual_tpu_v4_top.sv
 
-.PHONY: all test-python test-rtl-unit test-rtl-integration lint physical-lint physical-full-lint physical-synth-check physical-synth-check-docker physical-full-synth-check-docker physical-openroad physical-openroad-docker physical-openroad-synth-odb-docker physical-openroad-floorplan-docker physical-full-openroad-docker physical-full-openroad-floorplan-docker waves clean
+.PHONY: all test-python test-rtl-unit test-rtl-integration qwen-demo-ui lint physical-lint physical-full-lint physical-synth-check physical-synth-check-docker physical-full-synth-check-docker physical-openroad physical-openroad-docker physical-openroad-synth-odb-docker physical-openroad-floorplan-docker physical-full-openroad-docker physical-full-openroad-floorplan-docker waves clean
 
 all: test-python test-rtl-unit test-rtl-integration
 
 test-python:
 	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m pytest -q tests/python
+
+qwen-demo-ui:
+	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m virtual_tpu.qwen.demo_ui
 
 lint:
 	@if command -v verilator >/dev/null 2>&1; then \

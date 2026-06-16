@@ -18,6 +18,7 @@ dependencies = [
 
 [project.scripts]
 qwen-chat = "virtual_tpu.qwen.chat:main"
+qwen-demo-ui = "virtual_tpu.qwen.demo_ui:main"
 
 [tool.setuptools]
 packages = ["virtual_tpu", "virtual_tpu.archsim", "virtual_tpu.archsim.network", "virtual_tpu.layout", "virtual_tpu.qwen", "compiler"]

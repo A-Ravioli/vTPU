@@ -26,6 +26,12 @@ Run the Python 16x16 matmul demo:
 PYTHONPATH=src python3 examples/matmul_16.py
 ```
 
+Run the local Qwen/vTPU chip-sim demo UI:
+
+```bash
+make qwen-demo-ui
+```
+
 `make lint` requires Verilator. The Python tests require the package dependencies declared in [pyproject.toml](pyproject.toml).
 
 ## The Machine In One Picture
